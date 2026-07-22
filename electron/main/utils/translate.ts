@@ -19,6 +19,18 @@ import {
   isCompletedModelFinishReason,
   TranslationOutputRepetitionGuard,
 } from "./translation-output";
+import {
+  addAssBilingualStyles,
+  formatAssBilingualStyledText,
+  type AssBilingualFontOptions,
+} from "./ass-bilingual";
+import {
+  assTextToPlainText,
+  createDefaultAssSections,
+  formatSrtOutputText,
+  subtitleTimestampToMilliseconds,
+  type SubtitleOutputFormat,
+} from "./subtitle-output";
 
 export interface SubtitleCueData {
   text: string;
@@ -42,7 +54,7 @@ interface SubtitleHeader {
 interface AssDescriptor {
   key?: string;
   type?: string;
-  value?: Record<string, string> | string;
+  value?: Record<string, string> | string | string[];
   [key: string]: unknown;
 }
 
@@ -58,11 +70,6 @@ export interface AssSubtitle {
 }
 
 export type ParsedSubtitle = Array<SubtitleCue | SubtitleHeader> | AssSubtitle;
-export type MultiLanguageSave =
-  | "none"
-  | "translate+original"
-  | "original+translate";
-
 export interface SubtitleTranslationChunk {
   before: string[];
   core: string[];
@@ -380,6 +387,7 @@ function parseSubtitle(
           line.key === "Dialogue" &&
           typeof line.value === "object" &&
           line.value !== null &&
+          !Array.isArray(line.value) &&
           typeof line.value.Text === "string"
       )
       .map((line) => {
@@ -398,49 +406,63 @@ function parseSubtitle(
   throw new Error(translationErrorCodes.unsupportedFileExtension);
 }
 
+function createAssSubtitleFromCues(events: SubtitleCue[]): AssSubtitle {
+  return {
+    events,
+    full: createDefaultAssSections(events) as AssSection[],
+  };
+}
+
 function saveTranslated(
   outputPath: string,
   parsedSubtitle: ParsedSubtitle,
-  fileExtension: string,
-  multiLangSave: MultiLanguageSave = "none"
+  outputFormat: SubtitleOutputFormat,
+  assFonts: AssBilingualFontOptions = {}
 ): void {
-  function parseTranslatedText(
-    originalSubtitle: string = "",
-    translatedText: string = "",
-    splitText: string = "\n"
-  ) {
-    switch (multiLangSave) {
-      case "none":
-        return translatedText;
-      case "translate+original":
-        return `${translatedText}${splitText}${originalSubtitle}`;
-      case "original+translate":
-        return `${originalSubtitle}${splitText}${translatedText}`;
-      default:
-        return translatedText;
-    }
-  }
-
   let newSubtitle = "";
-  if (Array.isArray(parsedSubtitle)) {
-    const format = fileExtension === "vtt" ? "WebVTT" : "SRT";
-    const translatedNodes = parsedSubtitle.map((node) => {
-      if (!isCue(node)) return node;
+  if (
+    outputFormat === "srt-translation" ||
+    outputFormat === "srt-bilingual" ||
+    outputFormat === "srt-original-translation"
+  ) {
+    const sourceIsAss = !Array.isArray(parsedSubtitle);
+    const translatedNodes = getSubtitleCues(parsedSubtitle).map((node) => {
+      const originalText = sourceIsAss
+        ? assTextToPlainText(node.data.text)
+        : node.data.text;
+      const translatedText = sourceIsAss
+        ? assTextToPlainText(node.data.translatedText ?? node.data.text)
+        : node.data.translatedText ?? node.data.text;
       return {
         type: node.type,
         data: {
-          ...node.data,
-          text: parseTranslatedText(
-            node.data.text,
-            node.data.translatedText ?? node.data.text
-          ),
+          start: subtitleTimestampToMilliseconds(node.data.start),
+          end: subtitleTimestampToMilliseconds(node.data.end),
+          text: formatSrtOutputText({
+            originalText,
+            translatedText,
+            outputFormat,
+          }),
         },
       };
     });
-    // SRT/WebVTT cues parsed by `subtitle` always use numeric timestamps.
-    newSubtitle = stringifySync(translatedNodes as NodeList, { format });
+    newSubtitle = stringifySync(translatedNodes as NodeList, { format: "SRT" });
   } else {
-    const { full, events } = parsedSubtitle;
+    const canPreserveAssStyles =
+      !Array.isArray(parsedSubtitle) &&
+      parsedSubtitle.full.some(
+        (section) =>
+          section.section === "V4+ Styles" &&
+          section.body?.some((line) => line.key === "Style")
+      );
+    const assSubtitle = canPreserveAssStyles
+      ? (parsedSubtitle as AssSubtitle)
+      : createAssSubtitleFromCues(getSubtitleCues(parsedSubtitle));
+    const { full, stylesBySource } = addAssBilingualStyles(
+      assSubtitle.full,
+      assFonts
+    );
+    const events = assSubtitle.events;
     // Use sequential alignment with Events order instead of text matching to avoid misalignment
     let dialogueIndex = 0;
     newSubtitle = assStringify(
@@ -455,24 +477,40 @@ function saveTranslated(
                   currentEvent &&
                   currentEvent.data.translatedText &&
                   typeof line.value === "object" &&
-                  line.value !== null
+                  line.value !== null &&
+                  !Array.isArray(line.value)
                     ? currentEvent.data.translatedText
-                    : typeof line.value === "object" && line.value !== null
+                    : typeof line.value === "object" &&
+                        line.value !== null &&
+                        !Array.isArray(line.value)
                       ? line.value.Text ?? ""
                       : "";
                 const value =
-                  typeof line.value === "object" && line.value !== null
+                  typeof line.value === "object" &&
+                  line.value !== null &&
+                  !Array.isArray(line.value)
                     ? line.value
                     : {};
+                const styleNames =
+                  stylesBySource.get(value.Style ?? "Default") ??
+                  stylesBySource.get("Default") ??
+                  stylesBySource.values().next().value;
                 return {
                   key: "Dialogue",
                   value: {
                     ...value,
-                    Text: parseTranslatedText(
-                      value.Text,
-                      translatedText,
-                      "\\n"
-                    ),
+                    Text: styleNames
+                      ? formatAssBilingualStyledText({
+                          originalText: value.Text ?? "",
+                          translatedText,
+                          order:
+                            outputFormat === "ass-original-translation"
+                              ? "original+translate"
+                              : "translate+original",
+                          translationStyle: styleNames.translation,
+                          originalStyle: styleNames.original,
+                        })
+                      : translatedText,
                   },
                 };
               }

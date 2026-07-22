@@ -12,6 +12,12 @@ export { translationErrorCodes } from "../../electron/shared/translation-error-c
 
 export const translationConcurrencyOptions = [1, 2, 5, 10] as const;
 export type TranslationConcurrency = (typeof translationConcurrencyOptions)[number];
+export type SubtitleOutputFormat =
+  | "srt-translation"
+  | "srt-bilingual"
+  | "srt-original-translation"
+  | "ass-bilingual"
+  | "ass-original-translation";
 
 export type TranslationStatus =
   | "pending"
@@ -28,7 +34,11 @@ export interface TranslationParams {
   lang: string;
   additional: string;
   temperature: number;
-  multiLangSave: "none" | "translate+original" | "original+translate";
+  outputFormat: SubtitleOutputFormat;
+  assFonts: {
+    translationFont: string;
+    originalFont: string;
+  };
   concurrency: TranslationConcurrency;
   delay: number;
   requestsPerMinute: number;
@@ -83,8 +93,16 @@ export interface ElectronAPI {
   onBatchProgress(listener: (data: BatchProgress) => void): () => void;
 }
 
+export interface LocalFontData {
+  family: string;
+  fullName: string;
+  postscriptName: string;
+  style: string;
+}
+
 declare global {
   interface Window {
     electronAPI: ElectronAPI;
+    queryLocalFonts?: () => Promise<LocalFontData[]>;
   }
 }

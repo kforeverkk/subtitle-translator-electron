@@ -19,7 +19,7 @@ import type {
   BatchProgress,
   SubtitleCuePreview,
   SubtitleFile,
-  TranslationParams,
+  SubtitleOutputFormat,
 } from "@/types/electron-api";
 import { translationErrorCodes } from "@/types/electron-api";
 import { Badge } from "@/components/ui/badge";
@@ -63,7 +63,7 @@ import {
 } from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import {
   Sheet,
@@ -98,6 +98,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import MarkdownContent from "@/components/MarkdownContent";
+import FontPicker from "@/components/FontPicker";
 
 type FileProgress = Pick<BatchProgress, "progress" | "status"> &
   Partial<Omit<BatchProgress, "progress" | "status" | "previewCues">> & {
@@ -208,9 +209,17 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
   const [concurrency] = useTranslationConcurrency();
   const [translationSuccessCount, incrementTranslationSuccessCount] =
     useTranslationSuccessCount();
-  const [multiLangSave, setMultiLangSave] = useLocalStorage<TranslationParams["multiLangSave"]>(
-    "multi_language_save",
-    "none"
+  const [outputFormat, setOutputFormat] = useLocalStorage<SubtitleOutputFormat>(
+    "subtitle_output_format",
+    "srt-translation"
+  );
+  const [assTranslationFont, setAssTranslationFont] = useLocalStorage(
+    "ass_translation_font",
+    ""
+  );
+  const [assOriginalFont, setAssOriginalFont] = useLocalStorage(
+    "ass_original_font",
+    ""
   );
   const [outputDirectory, setOutputDirectory] = useLocalStorage(
     "translate_output_directory",
@@ -624,7 +633,11 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
           lang,
           additional,
           temperature,
-          multiLangSave,
+          outputFormat,
+          assFonts: {
+            translationFont: assTranslationFont,
+            originalFont: assOriginalFont,
+          },
           concurrency,
           contextSize: normalizedContextSize,
           delay: delay * 1000,
@@ -1017,20 +1030,84 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
                 <FieldLabel htmlFor="task-output-format">
                   {t("tasks.output.label")}
                 </FieldLabel>
-                <Select value={multiLangSave} onValueChange={(value) => setMultiLangSave(value as TranslationParams["multiLangSave"])}>
+                <Select
+                  value={outputFormat}
+                  onValueChange={(value) =>
+                    setOutputFormat(value as SubtitleOutputFormat)
+                  }
+                >
                   <SelectTrigger id="task-output-format" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
-                      <SelectItem value="none">{t("tasks.output.none")}</SelectItem>
-                      <SelectItem value="translate+original">{t("tasks.output.translateOriginal")}</SelectItem>
-                      <SelectItem value="original+translate">{t("tasks.output.originalTranslate")}</SelectItem>
+                      <SelectLabel>SRT</SelectLabel>
+                      <SelectItem value="srt-translation">
+                        {t("tasks.output.srtTranslation")}
+                      </SelectItem>
+                      <SelectItem value="srt-bilingual">
+                        {t("tasks.output.srtBilingual")}
+                      </SelectItem>
+                      <SelectItem value="srt-original-translation">
+                        {t("tasks.output.srtOriginalTranslation")}
+                      </SelectItem>
+                    </SelectGroup>
+                    <SelectSeparator />
+                    <SelectGroup>
+                      <SelectLabel>ASS</SelectLabel>
+                      <SelectItem value="ass-bilingual">
+                        {t("tasks.output.assBilingual")}
+                      </SelectItem>
+                      <SelectItem value="ass-original-translation">
+                        {t("tasks.output.assOriginalTranslation")}
+                      </SelectItem>
                     </SelectGroup>
                   </SelectContent>
                 </Select>
                 <FieldDescription>{t("tasks.output.description")}</FieldDescription>
               </Field>
+              {outputFormat.startsWith("ass-") && (
+                <div className="grid gap-5 md:col-span-2 md:grid-cols-2">
+                  <Field>
+                    <FieldLabel htmlFor="task-ass-translation-font">
+                      {t("tasks.output.translationFont")}
+                    </FieldLabel>
+                    <FontPicker
+                      id="task-ass-translation-font"
+                      value={assTranslationFont}
+                      onValueChange={setAssTranslationFont}
+                      placeholder={t("tasks.output.fontPlaceholder")}
+                      useDefaultLabel={t("tasks.output.fontUseDefault")}
+                      searchPlaceholder={t("tasks.output.fontSearch")}
+                      loadingLabel={t("tasks.output.fontLoading")}
+                      emptyLabel={t("tasks.output.fontEmpty")}
+                      unavailableLabel={t("tasks.output.fontUnavailable")}
+                    />
+                    <FieldDescription>
+                      {t("tasks.output.translationFontDescription")}
+                    </FieldDescription>
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="task-ass-original-font">
+                      {t("tasks.output.originalFont")}
+                    </FieldLabel>
+                    <FontPicker
+                      id="task-ass-original-font"
+                      value={assOriginalFont}
+                      onValueChange={setAssOriginalFont}
+                      placeholder={t("tasks.output.fontPlaceholder")}
+                      useDefaultLabel={t("tasks.output.fontUseDefault")}
+                      searchPlaceholder={t("tasks.output.fontSearch")}
+                      loadingLabel={t("tasks.output.fontLoading")}
+                      emptyLabel={t("tasks.output.fontEmpty")}
+                      unavailableLabel={t("tasks.output.fontUnavailable")}
+                    />
+                    <FieldDescription>
+                      {t("tasks.output.originalFontDescription")}
+                    </FieldDescription>
+                  </Field>
+                </div>
+              )}
               <Field>
                 <FieldLabel htmlFor="task-language">{t("tasks.language.label")}</FieldLabel>
                 <Input

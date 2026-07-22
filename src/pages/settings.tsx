@@ -8,6 +8,7 @@ import useTranslationConcurrency from "@/hooks/useTranslationConcurrency";
 import usePrompt from "@/hooks/usePrompt";
 import {
   translationConcurrencyOptions,
+  type SubtitleOutputFormat,
   type TranslationConcurrency,
 } from "@/types/electron-api";
 import { Button } from "@/components/ui/button";
@@ -23,6 +24,8 @@ import {
   SelectContent,
   SelectGroup,
   SelectItem,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -34,6 +37,7 @@ import {
 } from "@/components/ui/sheet";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
+import FontPicker from "@/components/FontPicker";
 import {
   AlertCircle,
   AlertTriangle,
@@ -98,9 +102,17 @@ export default function Settings() {
     useState<ConnectionStatus>("idle");
   const [connectionMessage, setConnectionMessage] = useState("");
   const connectionRequestRef = useRef(0);
-  const [multiLangSave, setMultiLangSave] = useLocalStorage(
-    "multi_language_save",
-    "none"
+  const [outputFormat, setOutputFormat] = useLocalStorage<SubtitleOutputFormat>(
+    "subtitle_output_format",
+    "srt-translation"
+  );
+  const [assTranslationFont, setAssTranslationFont] = useLocalStorage(
+    "ass_translation_font",
+    ""
+  );
+  const [assOriginalFont, setAssOriginalFont] = useLocalStorage(
+    "ass_original_font",
+    ""
   );
   const apiKey = keys.find((key) => key.trim().length > 0)?.trim() || "";
   const normalizedApiHost = host.trim();
@@ -348,18 +360,83 @@ export default function Settings() {
             <FieldDescription>{t("settings.concurrency.description")}</FieldDescription>
           </Field>
           <Field>
-            <FieldLabel>{t("save.multi-language.name")}</FieldLabel>
-            <Select value={multiLangSave} onValueChange={setMultiLangSave}>
+            <FieldLabel>{t("tasks.output.label")}</FieldLabel>
+            <Select
+              value={outputFormat}
+              onValueChange={(value) =>
+                setOutputFormat(value as SubtitleOutputFormat)
+              }
+            >
               <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectGroup>
-                  <SelectItem value="none">{t("save.multi-language.options.none")}</SelectItem>
-                  <SelectItem value="translate+original">{t("save.multi-language.options.translate+original")}</SelectItem>
-                  <SelectItem value="original+translate">{t("save.multi-language.options.original+translate")}</SelectItem>
+                  <SelectLabel>SRT</SelectLabel>
+                  <SelectItem value="srt-translation">
+                    {t("tasks.output.srtTranslation")}
+                  </SelectItem>
+                  <SelectItem value="srt-bilingual">
+                    {t("tasks.output.srtBilingual")}
+                  </SelectItem>
+                  <SelectItem value="srt-original-translation">
+                    {t("tasks.output.srtOriginalTranslation")}
+                  </SelectItem>
+                </SelectGroup>
+                <SelectSeparator />
+                <SelectGroup>
+                  <SelectLabel>ASS</SelectLabel>
+                  <SelectItem value="ass-bilingual">
+                    {t("tasks.output.assBilingual")}
+                  </SelectItem>
+                  <SelectItem value="ass-original-translation">
+                    {t("tasks.output.assOriginalTranslation")}
+                  </SelectItem>
                 </SelectGroup>
               </SelectContent>
             </Select>
+            <FieldDescription>{t("tasks.output.description")}</FieldDescription>
           </Field>
+          {outputFormat.startsWith("ass-") && (
+            <>
+              <Field>
+                <FieldLabel htmlFor="settings-ass-translation-font">
+                  {t("tasks.output.translationFont")}
+                </FieldLabel>
+                <FontPicker
+                  id="settings-ass-translation-font"
+                  value={assTranslationFont}
+                  onValueChange={setAssTranslationFont}
+                  placeholder={t("tasks.output.fontPlaceholder")}
+                  useDefaultLabel={t("tasks.output.fontUseDefault")}
+                  searchPlaceholder={t("tasks.output.fontSearch")}
+                  loadingLabel={t("tasks.output.fontLoading")}
+                  emptyLabel={t("tasks.output.fontEmpty")}
+                  unavailableLabel={t("tasks.output.fontUnavailable")}
+                />
+                <FieldDescription>
+                  {t("tasks.output.translationFontDescription")}
+                </FieldDescription>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="settings-ass-original-font">
+                  {t("tasks.output.originalFont")}
+                </FieldLabel>
+                <FontPicker
+                  id="settings-ass-original-font"
+                  value={assOriginalFont}
+                  onValueChange={setAssOriginalFont}
+                  placeholder={t("tasks.output.fontPlaceholder")}
+                  useDefaultLabel={t("tasks.output.fontUseDefault")}
+                  searchPlaceholder={t("tasks.output.fontSearch")}
+                  loadingLabel={t("tasks.output.fontLoading")}
+                  emptyLabel={t("tasks.output.fontEmpty")}
+                  unavailableLabel={t("tasks.output.fontUnavailable")}
+                />
+                <FieldDescription>
+                  {t("tasks.output.originalFontDescription")}
+                </FieldDescription>
+              </Field>
+            </>
+          )}
           <Field>
             <FieldLabel htmlFor="settings-prompt">{t("settings.prompt.label")}</FieldLabel>
             <Textarea id="settings-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} className="min-h-52 resize-y" />
