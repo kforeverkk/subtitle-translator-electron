@@ -1,7 +1,60 @@
+import type { Output as AIOutput } from "ai";
+
 export function isCompletedModelFinishReason(
   finishReason: string
 ): boolean {
   return finishReason === "stop";
+}
+
+/**
+ * Validate either the object wrapper used by AI SDK's array output mode or a
+ * bare JSON array returned by an OpenAI-compatible endpoint.
+ */
+export function parseTranslationOutput(value: unknown): string[] {
+  const elements = Array.isArray(value)
+    ? value
+    : typeof value === "object" &&
+        value !== null &&
+        "elements" in value &&
+        Array.isArray(value.elements)
+      ? value.elements
+      : undefined;
+
+  if (!elements || elements.some((element) => typeof element !== "string")) {
+    throw new Error(
+      "Translation output validation failed: expected an array of strings"
+    );
+  }
+
+  return elements;
+}
+
+export function withBareTranslationArrayFallback(
+  output: AIOutput.Output<string[], string[], string>
+): AIOutput.Output<string[], string[], string> {
+  return {
+    ...output,
+    async parseCompleteOutput(options, context) {
+      try {
+        return await output.parseCompleteOutput(options, context);
+      } catch (error) {
+        let parsedOutput: unknown;
+        try {
+          parsedOutput = JSON.parse(options.text);
+        } catch {
+          throw error;
+        }
+
+        if (!Array.isArray(parsedOutput)) throw error;
+
+        try {
+          return parseTranslationOutput(parsedOutput);
+        } catch {
+          throw error;
+        }
+      }
+    },
+  };
 }
 
 const REPETITION_WINDOW_SIZE = 8_192;

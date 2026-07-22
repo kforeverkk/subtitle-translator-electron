@@ -18,6 +18,7 @@ import {
 import {
   isCompletedModelFinishReason,
   TranslationOutputRepetitionGuard,
+  withBareTranslationArrayFallback,
 } from "./translation-output";
 import {
   addAssBilingualStyles,
@@ -295,15 +296,19 @@ async function translateSubtitleChunk(
   >();
   let stoppedForRepetition = false;
 
+  const translationArrayOutput = Output.array({
+    element: z.string().describe("The translated subtitle"),
+    description:
+      "Return one translated subtitle for each core subtitle, in the same order.",
+  });
+  const compatibleTranslationArrayOutput =
+    withBareTranslationArrayFallback(translationArrayOutput);
+
   const result = streamText({
     model: ai(model),
     temperature,
     system: systemPrompt,
-    output: Output.array({
-      element: z.string().describe("The translated subtitle"),
-      description:
-        "Return one translated subtitle for each core subtitle, in the same order.",
-    }),
+    output: compatibleTranslationArrayOutput,
     prompt:
       `Translate only the \`core\` subtitles. Use \`before\` and \`after\` only as context. ` +
       `Return a JSON object with one \`elements\` array containing exactly ${core.length} translated strings ` +
