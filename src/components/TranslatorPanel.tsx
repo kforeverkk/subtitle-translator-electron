@@ -786,7 +786,7 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
             </div>
           </div>
           <div className="min-w-[760px]">
-            <Table>
+            <Table className="table-fixed">
               <TableHeader>
                 <TableRow>
                   <TableHead className="min-w-[320px] px-5">{t("tasks.table.file")}</TableHead>
