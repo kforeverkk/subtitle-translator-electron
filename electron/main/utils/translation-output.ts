@@ -57,6 +57,64 @@ export function withBareTranslationArrayFallback(
   };
 }
 
+export function createTranslationOutputValidationError(
+  output: readonly string[],
+  core: readonly string[]
+): Error | undefined {
+  if (
+    output.length !== core.length ||
+    output.some(
+      (translation, index) =>
+        core[index]?.trim().length > 0 && translation.trim().length === 0
+    )
+  ) {
+    return new Error(
+      `Translation output validation failed: expected ${core.length} non-empty subtitles, got ${output.length}`
+    );
+  }
+
+  return undefined;
+}
+
+export function validateTranslationOutputForCore(
+  output: readonly string[],
+  core: readonly string[]
+): void {
+  const validationError = createTranslationOutputValidationError(output, core);
+  if (validationError) throw validationError;
+}
+
+export function createTranslationRepairPrompt({
+  before,
+  core,
+  after,
+  invalidOutput,
+  validationError,
+}: {
+  before: readonly string[];
+  core: readonly string[];
+  after: readonly string[];
+  invalidOutput: readonly string[];
+  validationError: string;
+}): string {
+  return (
+    `Repair the previous subtitle translation output so it matches the required shape exactly.\n\n` +
+    `Validation error from the application: ${validationError}\n\n` +
+    `Return a JSON object with exactly one property named \`elements\`. ` +
+    `\`elements\` must contain exactly ${core.length} strings, one translated subtitle for each \`core\` subtitle, in the same order.\n` +
+    `Do not add, remove, split, merge, summarize, explain, or renumber subtitles. ` +
+    `If the previous output has too many items, consolidate or remove only the extra segmentation while preserving the meaning of the matching core subtitle. ` +
+    `If it has too few items, add only the missing translations. ` +
+    `Every non-empty core subtitle must have a non-empty translation. Preserve subtitle markup.\n\n` +
+    JSON.stringify({
+      before,
+      core,
+      after,
+      previousInvalidOutput: invalidOutput,
+    })
+  );
+}
+
 const REPETITION_WINDOW_SIZE = 8_192;
 const REPETITION_CHECK_INTERVAL = 256;
 const MAX_REPETITION_PERIOD = 2_048;

@@ -16,8 +16,11 @@ import {
   subtitleAnalysisSchema,
 } from "./analysis-output";
 import {
+  createTranslationOutputValidationError,
+  createTranslationRepairPrompt,
   isCompletedModelFinishReason,
   TranslationOutputRepetitionGuard,
+  validateTranslationOutputForCore,
   withBareTranslationArrayFallback,
 } from "./translation-output";
 import {
@@ -285,16 +288,10 @@ async function translateSubtitleChunk(
     .replaceAll("{{lang}}", lang)
     .replaceAll("{{additional}}", additional);
 
-  await requestRateLimiter?.waitForSlot(abortSignal);
   const repetitionController = new AbortController();
   const requestAbortSignal = abortSignal
     ? AbortSignal.any([abortSignal, repetitionController.signal])
     : repetitionController.signal;
-  const repetitionGuards = new Map<
-    string,
-    TranslationOutputRepetitionGuard
-  >();
-  let stoppedForRepetition = false;
 
   const translationArrayOutput = Output.array({
     element: z.string().describe("The translated subtitle"),
@@ -304,73 +301,94 @@ async function translateSubtitleChunk(
   const compatibleTranslationArrayOutput =
     withBareTranslationArrayFallback(translationArrayOutput);
 
-  const result = streamText({
-    model: ai(model),
-    temperature,
-    system: systemPrompt,
-    output: compatibleTranslationArrayOutput,
-    prompt:
-      `Translate only the \`core\` subtitles. Use \`before\` and \`after\` only as context. ` +
-      `Return a JSON object with one \`elements\` array containing exactly ${core.length} translated strings ` +
-      `in the same order as \`core\`, with no other properties.\n\n` +
-      `A bracketed note such as [source phrase repeats N times total] is input metadata, not subtitle text. ` +
-      `Interpret repeated source phrases naturally and never output the bracketed note.\n\n` +
-      JSON.stringify({
+  const runTranslationRequest = async (requestPrompt: string) => {
+    await requestRateLimiter?.waitForSlot(abortSignal);
+    const repetitionGuards = new Map<
+      string,
+      TranslationOutputRepetitionGuard
+    >();
+    let stoppedForRepetition = false;
+
+    const result = streamText({
+      model: ai(model),
+      temperature,
+      system: systemPrompt,
+      output: compatibleTranslationArrayOutput,
+      prompt: requestPrompt,
+      maxRetries: 0,
+      abortSignal: requestAbortSignal,
+      onChunk({ chunk }) {
+        if (
+          chunk.type !== "text-delta" &&
+          chunk.type !== "reasoning-delta"
+        ) {
+          return;
+        }
+
+        const guardKey = `${chunk.type}:${chunk.id}`;
+        const guard =
+          repetitionGuards.get(guardKey) ??
+          new TranslationOutputRepetitionGuard();
+        repetitionGuards.set(guardKey, guard);
+
+        if (guard.push(chunk.text)) {
+          stoppedForRepetition = true;
+          repetitionController.abort(
+            new Error(translationErrorCodes.repetitiveModelOutput)
+          );
+        }
+      },
+    });
+
+    try {
+      const finishReason = await result.finishReason;
+      if (!isCompletedModelFinishReason(finishReason)) {
+        throw new Error(translationErrorCodes.incompleteModelOutput);
+      }
+      return await result.output;
+    } catch (error) {
+      if (stoppedForRepetition && !abortSignal?.aborted) {
+        throw new Error(translationErrorCodes.repetitiveModelOutput);
+      }
+      throw error;
+    }
+  };
+
+  const initialPrompt =
+    `Translate only the \`core\` subtitles. Use \`before\` and \`after\` only as context. ` +
+    `Return a JSON object with one \`elements\` array containing exactly ${core.length} translated strings ` +
+    `in the same order as \`core\`, with no other properties.\n` +
+    `This is a one-to-one mapping: \`elements[0]\` translates \`core[0]\`, \`elements[1]\` translates \`core[1]\`, and so on. ` +
+    `Do not add, remove, split, merge, summarize, explain, or renumber subtitles.\n\n` +
+    `A bracketed note such as [source phrase repeats N times total] is input metadata, not subtitle text. ` +
+    `Interpret repeated source phrases naturally and never output the bracketed note.\n\n` +
+    JSON.stringify({
+      before: compactedBefore,
+      core: compactedCore,
+      after: compactedAfter,
+    });
+
+  const output = await runTranslationRequest(initialPrompt);
+  const validationError = createTranslationOutputValidationError(
+    output,
+    compactedCore
+  );
+
+  if (validationError) {
+    const repairedOutput = await runTranslationRequest(
+      createTranslationRepairPrompt({
         before: compactedBefore,
         core: compactedCore,
         after: compactedAfter,
-      }),
-    maxRetries: 0,
-    abortSignal: requestAbortSignal,
-    onChunk({ chunk }) {
-      if (
-        chunk.type !== "text-delta" &&
-        chunk.type !== "reasoning-delta"
-      ) {
-        return;
-      }
-
-      const guardKey = `${chunk.type}:${chunk.id}`;
-      const guard =
-        repetitionGuards.get(guardKey) ??
-        new TranslationOutputRepetitionGuard();
-      repetitionGuards.set(guardKey, guard);
-
-      if (guard.push(chunk.text)) {
-        stoppedForRepetition = true;
-        repetitionController.abort(
-          new Error(translationErrorCodes.repetitiveModelOutput)
-        );
-      }
-    },
-  });
-
-  let output: string[];
-  try {
-    const finishReason = await result.finishReason;
-    if (!isCompletedModelFinishReason(finishReason)) {
-      throw new Error(translationErrorCodes.incompleteModelOutput);
-    }
-    output = await result.output;
-  } catch (error) {
-    if (stoppedForRepetition && !abortSignal?.aborted) {
-      throw new Error(translationErrorCodes.repetitiveModelOutput);
-    }
-    throw error;
-  }
-
-  if (
-    output.length !== core.length ||
-    output.some(
-      (translation, index) =>
-        core[index].trim().length > 0 && translation.trim().length === 0
-    )
-  ) {
-    throw new Error(
-      `Translation output validation failed: expected ${core.length} non-empty subtitles, got ${output.length}`
+        invalidOutput: output,
+        validationError: validationError.message,
+      })
     );
+    validateTranslationOutputForCore(repairedOutput, compactedCore);
+    return repairedOutput;
   }
 
+  validateTranslationOutputForCore(output, compactedCore);
   return output;
 }
 

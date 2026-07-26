@@ -3,9 +3,12 @@ import test from "node:test";
 import { NoObjectGeneratedError, Output } from "ai";
 import { z } from "zod";
 import {
+  createTranslationOutputValidationError,
+  createTranslationRepairPrompt,
   isCompletedModelFinishReason,
   parseTranslationOutput,
   TranslationOutputRepetitionGuard,
+  validateTranslationOutputForCore,
   withBareTranslationArrayFallback,
 } from "../electron/main/utils/translation-output.ts";
 
@@ -34,6 +37,38 @@ test("rejects malformed translation output", () => {
     () => parseTranslationOutput({ translations: ["第一行"] }),
     /expected an array of strings/
   );
+});
+
+test("validates translation count and non-empty subtitles", () => {
+  assert.equal(
+    createTranslationOutputValidationError(["第一行", "第二行"], ["A", "B"]),
+    undefined
+  );
+
+  assert.throws(
+    () => validateTranslationOutputForCore(["第一行", "第二行", "第三行"], ["A", "B"]),
+    /expected 2 non-empty subtitles, got 3/
+  );
+  assert.throws(
+    () => validateTranslationOutputForCore(["第一行", ""], ["A", "B"]),
+    /expected 2 non-empty subtitles, got 2/
+  );
+});
+
+test("builds a repair prompt with validation feedback and previous output", () => {
+  const prompt = createTranslationRepairPrompt({
+    before: ["Previously"],
+    core: ["Hello.", "Goodbye."],
+    after: ["Later"],
+    invalidOutput: ["哈囉。", "再見。", "多出來的字幕。"],
+    validationError:
+      "Translation output validation failed: expected 2 non-empty subtitles, got 3",
+  });
+
+  assert.match(prompt, /expected 2 non-empty subtitles, got 3/);
+  assert.match(prompt, /exactly 2 strings/);
+  assert.match(prompt, /previousInvalidOutput/);
+  assert.match(prompt, /Do not add, remove, split, merge/);
 });
 
 test("preserves array output validation while accepting a bare array", async () => {
