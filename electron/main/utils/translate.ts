@@ -16,6 +16,7 @@ import {
   subtitleAnalysisSchema,
 } from "./analysis-output";
 import {
+  assertCompleteTranslationOutput,
   isCompletedModelFinishReason,
   TranslationOutputRepetitionGuard,
 } from "./translation-output";
@@ -347,17 +348,7 @@ async function translateSubtitleChunk(
     throw error;
   }
 
-  if (
-    output.length !== core.length ||
-    output.some(
-      (translation, index) =>
-        core[index].trim().length > 0 && translation.trim().length === 0
-    )
-  ) {
-    throw new Error(
-      `Translation output validation failed: expected ${core.length} non-empty subtitles, got ${output.length}`
-    );
-  }
+  assertCompleteTranslationOutput(core, output);
 
   return output;
 }
