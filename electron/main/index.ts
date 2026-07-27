@@ -47,6 +47,7 @@ import {
   getPathClaimKey,
   hasPathClaimConflict,
 } from "./utils/path-claims";
+import { getTranslatedPath } from "./utils/output-path";
 import {
   createTranslationConfigFingerprint,
   getTranslationCheckpointCandidates,
@@ -256,19 +257,6 @@ function isAllowedExternalUrl(target: string): boolean {
   } catch {
     return false;
   }
-}
-
-function getTranslatedPath(
-  filePath: string,
-  outputDirectory?: string,
-  sourceName = path.basename(filePath),
-  sourceExtension = path.extname(filePath).slice(1).toLowerCase()
-): string {
-  const basename = path.basename(sourceName, path.extname(sourceName));
-  return path.join(
-    outputDirectory ?? path.dirname(filePath),
-    `${basename}.translated.${sourceExtension}`
-  );
 }
 
 function getTranslationCachePath(
@@ -934,7 +922,8 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         file.path,
         outputDirectory,
         input.sourceName,
-        input.sourceExtension
+        input.sourceExtension,
+        params.lang
       );
       outputPath = translatedOutputPath;
       let analysisData = input.analysis;
