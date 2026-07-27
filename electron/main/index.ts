@@ -1137,7 +1137,7 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
 
             if (!Array.isArray(result) || result.length !== block.length) {
               throw new Error(
-                `Translation output validation failed: expected ${block.length} subtitles, got ${Array.isArray(result) ? result.length : "a non-array result"}`
+                `${translationErrorCodes.incompleteModelOutput}: expected ${block.length} subtitles, got ${Array.isArray(result) ? result.length : "a non-array result"}`
               );
             }
 

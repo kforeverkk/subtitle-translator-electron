@@ -4,6 +4,30 @@ export function isCompletedModelFinishReason(
   return finishReason === "stop";
 }
 
+const INCOMPLETE_MODEL_OUTPUT_ERROR_CODE = "ERR_INCOMPLETE_MODEL_OUTPUT";
+
+/**
+ * Reject incomplete model responses before they can be associated with subtitle
+ * cues. Callers can treat this error as retryable and retranslate the complete
+ * block with its original context.
+ */
+export function assertCompleteTranslationOutput(
+  core: readonly string[],
+  output: readonly string[]
+): void {
+  if (
+    output.length !== core.length ||
+    output.some(
+      (translation, index) =>
+        core[index].trim().length > 0 && translation.trim().length === 0
+    )
+  ) {
+    throw new Error(
+      `${INCOMPLETE_MODEL_OUTPUT_ERROR_CODE}: expected ${core.length} non-empty subtitles, got ${output.length}`
+    );
+  }
+}
+
 const REPETITION_WINDOW_SIZE = 8_192;
 const REPETITION_CHECK_INTERVAL = 256;
 const MAX_REPETITION_PERIOD = 2_048;
