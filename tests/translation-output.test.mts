@@ -1,14 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assertCompleteTranslationOutput,
   isCompletedModelFinishReason,
   TranslationOutputRepetitionGuard,
 } from "../electron/main/utils/translation-output.ts";
+import { translationErrorCodes } from "../electron/shared/translation-error-codes.ts";
 
 test("accepts only a normally completed model response", () => {
   assert.equal(isCompletedModelFinishReason("stop"), true);
   assert.equal(isCompletedModelFinishReason("length"), false);
   assert.equal(isCompletedModelFinishReason("content-filter"), false);
+});
+
+test("uses the incomplete-model error code for incomplete translation batches", () => {
+  assert.throws(
+    () =>
+      assertCompleteTranslationOutput(
+        ["One", "Two", "Three"],
+        ["一", "二"]
+      ),
+    new RegExp(
+      `${translationErrorCodes.incompleteModelOutput}: expected 3 non-empty subtitles, got 2`
+    )
+  );
 });
 
 test("detects a pathological exact cycle across streamed chunks", () => {
