@@ -2,8 +2,6 @@ import { useCallback } from "react";
 import { useLocalStorage } from "usehooks-ts";
 
 export const TRANSLATION_SUCCESS_COUNT_KEY = "translation_success_count";
-export const TRANSLATION_SUCCESS_THRESHOLD = 10;
-
 export default function useTranslationSuccessCount() {
   const [count, setCount] = useLocalStorage(
     TRANSLATION_SUCCESS_COUNT_KEY,
