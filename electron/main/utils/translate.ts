@@ -3,7 +3,6 @@ import path from "node:path";
 import { parseSync, stringifySync, type NodeList } from "subtitle";
 import assParser from "ass-parser";
 import assStringify from "ass-stringify";
-import { z } from "zod";
 import { generateText, Output, streamText } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { translationErrorCodes } from "../../shared/translation-error-codes";
@@ -19,9 +18,9 @@ import {
   createTranslationOutputValidationError,
   createTranslationRepairPrompt,
   isCompletedModelFinishReason,
+  parseTranslationOutput,
   TranslationOutputRepetitionGuard,
   validateTranslationOutputForCore,
-  withBareTranslationArrayFallback,
 } from "./translation-output";
 import {
   addAssBilingualStyles,
@@ -293,13 +292,7 @@ async function translateSubtitleChunk(
     ? AbortSignal.any([abortSignal, repetitionController.signal])
     : repetitionController.signal;
 
-  const translationArrayOutput = Output.array({
-    element: z.string().describe("The translated subtitle"),
-    description:
-      "Return one translated subtitle for each core subtitle, in the same order.",
-  });
-  const compatibleTranslationArrayOutput =
-    withBareTranslationArrayFallback(translationArrayOutput);
+  const translationOutput = Output.json();
 
   const runTranslationRequest = async (requestPrompt: string) => {
     await requestRateLimiter?.waitForSlot(abortSignal);
@@ -313,7 +306,7 @@ async function translateSubtitleChunk(
       model: ai(model),
       temperature,
       system: systemPrompt,
-      output: compatibleTranslationArrayOutput,
+      output: translationOutput,
       prompt: requestPrompt,
       maxRetries: 0,
       abortSignal: requestAbortSignal,
@@ -345,7 +338,7 @@ async function translateSubtitleChunk(
       if (!isCompletedModelFinishReason(finishReason)) {
         throw new Error(translationErrorCodes.incompleteModelOutput);
       }
-      return await result.output;
+      return parseTranslationOutput(await result.output);
     } catch (error) {
       if (stoppedForRepetition && !abortSignal?.aborted) {
         throw new Error(translationErrorCodes.repetitiveModelOutput);
@@ -589,12 +582,7 @@ async function analyzeSubtitlesForContext(
   const result = await generateText({
     model: ai(model),
     temperature,
-    output: Output.object({
-      name: "SubtitleAnalysis",
-      description:
-        "A plot summary and glossary extracted from subtitle samples.",
-      schema: subtitleAnalysisSchema,
-    }),
+    output: Output.json(),
     system: `# System Prompt
 
 You are a subtitle content analyst assisting a translation and glossary extraction system.
@@ -628,7 +616,7 @@ Analyze subtitle samples and return one JSON object with exactly these propertie
     throw new Error(translationErrorCodes.incompleteModelOutput);
   }
 
-  return formatSubtitleAnalysis(result.output);
+  return formatSubtitleAnalysis(subtitleAnalysisSchema.parse(result.output));
 }
 
 export {

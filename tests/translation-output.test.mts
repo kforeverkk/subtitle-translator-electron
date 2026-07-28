@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { NoObjectGeneratedError, Output } from "ai";
-import { z } from "zod";
 import {
   createTranslationOutputValidationError,
   createTranslationRepairPrompt,
@@ -9,7 +7,6 @@ import {
   parseTranslationOutput,
   TranslationOutputRepetitionGuard,
   validateTranslationOutputForCore,
-  withBareTranslationArrayFallback,
 } from "../electron/main/utils/translation-output.ts";
 
 test("accepts only a normally completed model response", () => {
@@ -69,37 +66,6 @@ test("builds a repair prompt with validation feedback and previous output", () =
   assert.match(prompt, /exactly 2 strings/);
   assert.match(prompt, /previousInvalidOutput/);
   assert.match(prompt, /Do not add, remove, split, merge/);
-});
-
-test("preserves array output validation while accepting a bare array", async () => {
-  const output = withBareTranslationArrayFallback(
-    Output.array({ element: z.string() })
-  );
-  const context = {} as never;
-
-  assert.deepEqual(
-    await output.parseCompleteOutput(
-      { text: '{"elements":["第一行","第二行"]}' },
-      context
-    ),
-    ["第一行", "第二行"]
-  );
-  assert.deepEqual(
-    await output.parseCompleteOutput(
-      { text: '["第一行","第二行"]' },
-      context
-    ),
-    ["第一行", "第二行"]
-  );
-
-  await assert.rejects(
-    output.parseCompleteOutput({ text: '["第一行",2]' }, context),
-    NoObjectGeneratedError
-  );
-  await assert.rejects(
-    output.parseCompleteOutput({ text: "not json" }, context),
-    NoObjectGeneratedError
-  );
 });
 
 test("detects a pathological exact cycle across streamed chunks", () => {

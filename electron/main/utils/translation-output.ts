@@ -1,5 +1,3 @@
-import type { Output as AIOutput } from "ai";
-
 export function isCompletedModelFinishReason(
   finishReason: string
 ): boolean {
@@ -27,34 +25,6 @@ export function parseTranslationOutput(value: unknown): string[] {
   }
 
   return elements;
-}
-
-export function withBareTranslationArrayFallback(
-  output: AIOutput.Output<string[], string[], string>
-): AIOutput.Output<string[], string[], string> {
-  return {
-    ...output,
-    async parseCompleteOutput(options, context) {
-      try {
-        return await output.parseCompleteOutput(options, context);
-      } catch (error) {
-        let parsedOutput: unknown;
-        try {
-          parsedOutput = JSON.parse(options.text);
-        } catch {
-          throw error;
-        }
-
-        if (!Array.isArray(parsedOutput)) throw error;
-
-        try {
-          return parseTranslationOutput(parsedOutput);
-        } catch {
-          throw error;
-        }
-      }
-    },
-  };
 }
 
 export function createTranslationOutputValidationError(
