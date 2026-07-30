@@ -26,7 +26,7 @@ function CheckUpdate() {
   useEffect(() => {
     const controller = new AbortController();
     fetch(
-      "https://api.github.com/repos/gnehs/subtitle-translator-electron/releases/latest",
+      "https://api.github.com/repos/kforeverkk/subtitle-translator-electron/releases/latest",
       { signal: controller.signal }
     )
       .then((response) => (response.ok ? response.json() : null))
@@ -52,7 +52,7 @@ function CheckUpdate() {
         label: t("update.view"),
         onClick: () => {
           void window.electronAPI.openExternal(
-            "https://github.com/gnehs/subtitle-translator-electron/releases/latest"
+            "https://github.com/kforeverkk/subtitle-translator-electron/releases/latest"
           );
         },
       },

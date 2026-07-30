@@ -5,6 +5,7 @@ import assParser from "ass-parser";
 import assStringify from "ass-stringify";
 import { generateText, Output, streamText } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { z } from "zod";
 import { translationErrorCodes } from "../../shared/translation-error-codes";
 import type { RequestRateLimiter } from "./request-rate-limiter";
 import { compactRepetitiveSubtitleText } from "./subtitle-chunks";
@@ -15,8 +16,6 @@ import {
   subtitleAnalysisSchema,
 } from "./analysis-output";
 import {
-  createTranslationOutputValidationError,
-  createTranslationRepairPrompt,
   isCompletedModelFinishReason,
   parseTranslationOutput,
   TranslationOutputRepetitionGuard,
@@ -235,7 +234,7 @@ function getAi({ apiKey, apiHost }: { apiKey: string; apiHost: string }) {
     baseURL: apiHost,
     headers: {
       // OpenRouter Headers
-      "HTTP-Referer": "https://github.com/gnehs/subtitle-translator-electron",
+      "HTTP-Referer": "https://github.com/kforeverkk/subtitle-translator-electron",
       "X-Title": "Subtitle Translator",
     },
   });
@@ -362,25 +361,6 @@ async function translateSubtitleChunk(
     });
 
   const output = await runTranslationRequest(initialPrompt);
-  const validationError = createTranslationOutputValidationError(
-    output,
-    compactedCore
-  );
-
-  if (validationError) {
-    const repairedOutput = await runTranslationRequest(
-      createTranslationRepairPrompt({
-        before: compactedBefore,
-        core: compactedCore,
-        after: compactedAfter,
-        invalidOutput: output,
-        validationError: validationError.message,
-      })
-    );
-    validateTranslationOutputForCore(repairedOutput, compactedCore);
-    return repairedOutput;
-  }
-
   validateTranslationOutputForCore(output, compactedCore);
   return output;
 }
@@ -619,9 +599,58 @@ Analyze subtitle samples and return one JSON object with exactly these propertie
   return formatSubtitleAnalysis(subtitleAnalysisSchema.parse(result.output));
 }
 
+async function detectSubtitleLanguage(
+  subtitles: string[],
+  {
+    apiKeys,
+    apiHost,
+    model,
+    requestRateLimiter,
+    abortSignal,
+  }: {
+    apiKeys: string[];
+    apiHost: string;
+    model: string;
+    requestRateLimiter?: RequestRateLimiter;
+    abortSignal?: AbortSignal;
+  }
+): Promise<string> {
+  const sampledSubtitles = sampleSubtitlesForAnalysis(subtitles);
+  if (sampledSubtitles.length === 0) return "";
+
+  const ai = getAi({ apiKey: getFirstValidApiKey(apiKeys), apiHost });
+  await requestRateLimiter?.waitForSlot(abortSignal);
+  const result = await generateText({
+    model: ai(model),
+    temperature: 0,
+    output: Output.json(),
+    system: `Detect the primary spoken language of subtitle samples.
+Return one JSON object with exactly one property named "language".
+The value must be the language's common English name. Do not infer the language from filenames and do not explain the answer.`,
+    prompt: sampledSubtitles.join("\n"),
+    maxRetries: 0,
+    abortSignal,
+  });
+
+  if (!isCompletedModelFinishReason(result.finishReason)) {
+    throw new Error(translationErrorCodes.incompleteModelOutput);
+  }
+
+  const parsed = z
+    .object({ language: z.string().trim().min(1) })
+    .safeParse(result.output);
+  if (!parsed.success) {
+    throw new Error(
+      `${translationErrorCodes.incompleteModelOutput}: invalid language detection output`
+    );
+  }
+  return parsed.data.language;
+}
+
 export {
   translateSubtitleChunk,
   parseSubtitle,
   saveTranslated,
   analyzeSubtitlesForContext,
+  detectSubtitleLanguage,
 };

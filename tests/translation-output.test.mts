@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createTranslationOutputValidationError,
-  createTranslationRepairPrompt,
   isCompletedModelFinishReason,
   parseTranslationOutput,
   TranslationOutputRepetitionGuard,
@@ -28,11 +27,11 @@ test("accepts wrapped and bare translation arrays from compatible endpoints", ()
 test("rejects malformed translation output", () => {
   assert.throws(
     () => parseTranslationOutput({ elements: ["第一行", 2] }),
-    /expected an array of strings/
+    /ERR_INCOMPLETE_MODEL_OUTPUT/
   );
   assert.throws(
     () => parseTranslationOutput({ translations: ["第一行"] }),
-    /expected an array of strings/
+    /ERR_INCOMPLETE_MODEL_OUTPUT/
   );
 });
 
@@ -44,28 +43,12 @@ test("validates translation count and non-empty subtitles", () => {
 
   assert.throws(
     () => validateTranslationOutputForCore(["第一行", "第二行", "第三行"], ["A", "B"]),
-    /expected 2 non-empty subtitles, got 3/
+    /ERR_INCOMPLETE_MODEL_OUTPUT: expected 2 non-empty subtitles, got 3/
   );
   assert.throws(
     () => validateTranslationOutputForCore(["第一行", ""], ["A", "B"]),
     /expected 2 non-empty subtitles, got 2/
   );
-});
-
-test("builds a repair prompt with validation feedback and previous output", () => {
-  const prompt = createTranslationRepairPrompt({
-    before: ["Previously"],
-    core: ["Hello.", "Goodbye."],
-    after: ["Later"],
-    invalidOutput: ["哈囉。", "再見。", "多出來的字幕。"],
-    validationError:
-      "Translation output validation failed: expected 2 non-empty subtitles, got 3",
-  });
-
-  assert.match(prompt, /expected 2 non-empty subtitles, got 3/);
-  assert.match(prompt, /exactly 2 strings/);
-  assert.match(prompt, /previousInvalidOutput/);
-  assert.match(prompt, /Do not add, remove, split, merge/);
 });
 
 test("detects a pathological exact cycle across streamed chunks", () => {

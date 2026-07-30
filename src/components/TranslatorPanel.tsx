@@ -7,9 +7,8 @@ import usePrompt from "@/hooks/usePrompt";
 import useDelay from "@/hooks/useDelay";
 import useRPM from "@/hooks/useRPM";
 import useTranslationConcurrency from "@/hooks/useTranslationConcurrency";
-import useTranslationSuccessCount, {
-  TRANSLATION_SUCCESS_THRESHOLD,
-} from "@/hooks/useTranslationSuccessCount";
+import useTranslationSuccessCount from "@/hooks/useTranslationSuccessCount";
+import { reachedTranslationSuccessPrompt } from "@/utils/translation-success";
 import { useTranslation } from "@/i18n";
 import { useAPIHost, useAPIKeys, useTemperature } from "@/hooks/useOpenAI";
 import { getFilePath } from "@/utils/filePath";
@@ -209,6 +208,8 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
   const [concurrency] = useTranslationConcurrency();
   const [translationSuccessCount, incrementTranslationSuccessCount] =
     useTranslationSuccessCount();
+  const previousTranslationSuccessCountRef = useRef(translationSuccessCount);
+  const [coffeeBannerVisible, setCoffeeBannerVisible] = useState(false);
   const [outputFormat, setOutputFormat] = useLocalStorage<SubtitleOutputFormat>(
     "subtitle_output_format",
     "srt-translation"
@@ -260,6 +261,18 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
   const finalPreviewCuesRef = useRef(
     new Map<string, SubtitleCuePreview[]>()
   );
+
+  useEffect(() => {
+    if (
+      reachedTranslationSuccessPrompt(
+        previousTranslationSuccessCountRef.current,
+        translationSuccessCount
+      )
+    ) {
+      setCoffeeBannerVisible(true);
+    }
+    previousTranslationSuccessCountRef.current = translationSuccessCount;
+  }, [translationSuccessCount]);
 
   useEffect(() => {
     if (!window.electronAPI?.onBatchProgress) return;
@@ -399,9 +412,6 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
     const status = batchProgress[file.path]?.status;
     return status === "analyzing" || status === "translating";
   }).length;
-  const shouldShowCoffeeBanner =
-    translationSuccessCount > TRANSLATION_SUCCESS_THRESHOLD;
-
   const customModelValue = modelSearch.trim();
   const normalizedModelSearch = customModelValue.toLowerCase();
   const filteredModels = availableModels.filter((modelInfo) =>
@@ -765,8 +775,12 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
               {t("tasks.empty.chooseFile")}
             </Button>
           </EmptyContent>
-          {shouldShowCoffeeBanner && (
-            <BuyMeACoffee dismissible className="w-full max-w-2xl" />
+          {coffeeBannerVisible && (
+            <BuyMeACoffee
+              dismissible
+              className="w-full max-w-2xl"
+              onDismiss={() => setCoffeeBannerVisible(false)}
+            />
           )}
           <p className="mt-auto pt-10 text-center text-xs text-muted-foreground">
             {t("tasks.empty.formats")}

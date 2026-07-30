@@ -22,16 +22,16 @@
 - Translation according to the preceding and following sentences
 - Save translation checkpoints as JSON so an interrupted translation can be resumed by dragging the JSON file back into the app
 
-## [Download](https://github.com/gnehs/subtitle-translator-electron/releases/latest)
+## [Download](https://github.com/kforeverkk/subtitle-translator-electron/releases/latest)
 
 Install with Homebrew:
 
 ```sh
-brew install --cask gnehs/tap/subtitle-translator-electron
+brew install --cask kforeverkk/tap/subtitle-translator-electron
 ```
 
 Download the latest stable version from the
-[Releases](https://github.com/gnehs/subtitle-translator-electron/releases/latest)
+[Releases](https://github.com/kforeverkk/subtitle-translator-electron/releases/latest)
 page
 
 ## Contributing

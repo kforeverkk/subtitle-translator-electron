@@ -1,3 +1,5 @@
+const INCOMPLETE_MODEL_OUTPUT_ERROR_CODE = "ERR_INCOMPLETE_MODEL_OUTPUT";
+
 export function isCompletedModelFinishReason(
   finishReason: string
 ): boolean {
@@ -20,7 +22,7 @@ export function parseTranslationOutput(value: unknown): string[] {
 
   if (!elements || elements.some((element) => typeof element !== "string")) {
     throw new Error(
-      "Translation output validation failed: expected an array of strings"
+      `${INCOMPLETE_MODEL_OUTPUT_ERROR_CODE}: expected an array of translated strings`
     );
   }
 
@@ -39,7 +41,7 @@ export function createTranslationOutputValidationError(
     )
   ) {
     return new Error(
-      `Translation output validation failed: expected ${core.length} non-empty subtitles, got ${output.length}`
+      `${INCOMPLETE_MODEL_OUTPUT_ERROR_CODE}: expected ${core.length} non-empty subtitles, got ${output.length}`
     );
   }
 
@@ -52,37 +54,6 @@ export function validateTranslationOutputForCore(
 ): void {
   const validationError = createTranslationOutputValidationError(output, core);
   if (validationError) throw validationError;
-}
-
-export function createTranslationRepairPrompt({
-  before,
-  core,
-  after,
-  invalidOutput,
-  validationError,
-}: {
-  before: readonly string[];
-  core: readonly string[];
-  after: readonly string[];
-  invalidOutput: readonly string[];
-  validationError: string;
-}): string {
-  return (
-    `Repair the previous subtitle translation output so it matches the required shape exactly.\n\n` +
-    `Validation error from the application: ${validationError}\n\n` +
-    `Return a JSON object with exactly one property named \`elements\`. ` +
-    `\`elements\` must contain exactly ${core.length} strings, one translated subtitle for each \`core\` subtitle, in the same order.\n` +
-    `Do not add, remove, split, merge, summarize, explain, or renumber subtitles. ` +
-    `If the previous output has too many items, consolidate or remove only the extra segmentation while preserving the meaning of the matching core subtitle. ` +
-    `If it has too few items, add only the missing translations. ` +
-    `Every non-empty core subtitle must have a non-empty translation. Preserve subtitle markup.\n\n` +
-    JSON.stringify({
-      before,
-      core,
-      after,
-      previousInvalidOutput: invalidOutput,
-    })
-  );
 }
 
 const REPETITION_WINDOW_SIZE = 8_192;

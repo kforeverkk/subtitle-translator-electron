@@ -8,11 +8,13 @@ import { cn } from "@/lib/utils";
 interface BuyMeACoffeeProps {
   className?: string;
   dismissible?: boolean;
+  onDismiss?: () => void;
 }
 
 export default function BuyMeACoffee({
   className,
   dismissible = false,
+  onDismiss,
 }: BuyMeACoffeeProps) {
   const { t } = useTranslation();
   const [isVisible, setIsVisible] = useState(true);
@@ -67,7 +69,10 @@ export default function BuyMeACoffee({
           variant="ghost"
           size="icon-sm"
           className="absolute top-2 right-2 rounded-full text-muted-foreground"
-          onClick={() => setIsVisible(false)}
+          onClick={() => {
+            setIsVisible(false);
+            onDismiss?.();
+          }}
           aria-label={t("translate.close")}
           title={t("translate.close")}
         >

@@ -32,15 +32,13 @@ import {
   translateSubtitleChunk,
   saveTranslated,
   analyzeSubtitlesForContext,
+  detectSubtitleLanguage,
   getSubtitleCues,
 } from "./utils/translate";
 import { createSubtitlePreview } from "./utils/subtitle-preview";
 import { normalizeAssFontName } from "./utils/ass-bilingual";
-import {
-  getSubtitleOutputFileSuffix,
-  subtitleOutputFormats,
-  type SubtitleOutputFormat,
-} from "./utils/subtitle-output";
+import { subtitleOutputFormats } from "./utils/subtitle-output";
+import { getTranslatedPath } from "./utils/output-path";
 import { shouldAnalyzeSubtitles } from "./utils/subtitle-sampling";
 import { fetchAvailableModels } from "./utils/models";
 import { RequestRateLimiter } from "./utils/request-rate-limiter";
@@ -271,19 +269,6 @@ function isAllowedExternalUrl(target: string): boolean {
   } catch {
     return false;
   }
-}
-
-function getTranslatedPath(
-  filePath: string,
-  outputFormat: SubtitleOutputFormat,
-  outputDirectory?: string,
-  sourceName = path.basename(filePath)
-): string {
-  const basename = path.basename(sourceName, path.extname(sourceName));
-  return path.join(
-    outputDirectory ?? path.dirname(filePath),
-    `${basename}.${getSubtitleOutputFileSuffix(outputFormat)}`
-  );
 }
 
 function getTranslationCachePath(
@@ -972,6 +957,32 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       const indexMap = new Map<SubtitleCue, number>();
       subtitle.forEach((cue, idx) => indexMap.set(cue, idx));
 
+      const allTexts = subtitle
+        .map((cue) => cue.data.text)
+        .filter((text: string) => text && text.length > 0);
+      let detectedSourceLanguage = "";
+      try {
+        detectedSourceLanguage = await retryTranslate(
+          (texts) =>
+            detectSubtitleLanguage(texts, {
+              apiKeys: params.apiKeys,
+              apiHost: params.apiHost,
+              model: params.model,
+              requestRateLimiter,
+              abortSignal,
+            }),
+          allTexts,
+          params.delay,
+          abortSignal
+        );
+      } catch (languageDetectionError) {
+        abortSignal.throwIfAborted();
+        console.warn(
+          "Source language detection failed; using the original fallback:",
+          languageDetectionError
+        );
+      }
+
       const outputDirectory = getValidatedOutputDirectory(
         params.outputDirectory
       );
@@ -979,7 +990,9 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         file.path,
         params.outputFormat,
         outputDirectory,
-        input.sourceName
+        input.sourceName,
+        params.lang,
+        detectedSourceLanguage
       );
       outputPath = translatedOutputPath;
       let analysisData = input.analysis;
@@ -1046,10 +1059,6 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       }
 
       // Build analysis context (plot summary + glossary) and attach to all requests
-      const allTexts = subtitle
-        .map((cue) => cue.data.text)
-        .filter((t: string) => t && t.length > 0);
-
       const shouldAnalyze = shouldAnalyzeSubtitles(
         analysisData,
         allTexts.length,
