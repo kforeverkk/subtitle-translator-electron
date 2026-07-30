@@ -1,31 +1,59 @@
+const INCOMPLETE_MODEL_OUTPUT_ERROR_CODE = "ERR_INCOMPLETE_MODEL_OUTPUT";
+
 export function isCompletedModelFinishReason(
   finishReason: string
 ): boolean {
   return finishReason === "stop";
 }
 
-const INCOMPLETE_MODEL_OUTPUT_ERROR_CODE = "ERR_INCOMPLETE_MODEL_OUTPUT";
-
 /**
- * Reject incomplete model responses before they can be associated with subtitle
- * cues. Callers can treat this error as retryable and retranslate the complete
- * block with its original context.
+ * Validate either the object wrapper used by AI SDK's array output mode or a
+ * bare JSON array returned by an OpenAI-compatible endpoint.
  */
-export function assertCompleteTranslationOutput(
-  core: readonly string[],
-  output: readonly string[]
-): void {
+export function parseTranslationOutput(value: unknown): string[] {
+  const elements = Array.isArray(value)
+    ? value
+    : typeof value === "object" &&
+        value !== null &&
+        "elements" in value &&
+        Array.isArray(value.elements)
+      ? value.elements
+      : undefined;
+
+  if (!elements || elements.some((element) => typeof element !== "string")) {
+    throw new Error(
+      `${INCOMPLETE_MODEL_OUTPUT_ERROR_CODE}: expected an array of translated strings`
+    );
+  }
+
+  return elements;
+}
+
+export function createTranslationOutputValidationError(
+  output: readonly string[],
+  core: readonly string[]
+): Error | undefined {
   if (
     output.length !== core.length ||
     output.some(
       (translation, index) =>
-        core[index].trim().length > 0 && translation.trim().length === 0
+        core[index]?.trim().length > 0 && translation.trim().length === 0
     )
   ) {
-    throw new Error(
+    return new Error(
       `${INCOMPLETE_MODEL_OUTPUT_ERROR_CODE}: expected ${core.length} non-empty subtitles, got ${output.length}`
     );
   }
+
+  return undefined;
+}
+
+export function validateTranslationOutputForCore(
+  output: readonly string[],
+  core: readonly string[]
+): void {
+  const validationError = createTranslationOutputValidationError(output, core);
+  if (validationError) throw validationError;
 }
 
 const REPETITION_WINDOW_SIZE = 8_192;

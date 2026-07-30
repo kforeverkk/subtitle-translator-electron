@@ -3,6 +3,14 @@ import type { SubtitleCue } from "./translate";
 
 const savedSubtitleSeparators = ["\r\n", "\n", "\\N", "\\n"] as const;
 
+function toPlainAssText(value: string): string {
+  return value
+    .replace(/\{[^{}]*\}/g, "")
+    .replace(/\\[Nn]/g, "\n")
+    .replace(/\\h/g, " ")
+    .trim();
+}
+
 /** Recover the translation portion from a cue saved in bilingual mode. */
 export function getTranslatedPreviewText(
   savedText: string,
@@ -21,6 +29,25 @@ export function getTranslatedPreviewText(
     const originalLast = `${separator}${originalText}`;
     if (savedText.endsWith(originalLast)) {
       return savedText.slice(0, -originalLast.length);
+    }
+  }
+
+  const plainSavedText = toPlainAssText(savedText);
+  const plainOriginalText = toPlainAssText(originalText);
+  if (
+    plainSavedText !== savedText ||
+    plainOriginalText !== originalText
+  ) {
+    for (const separator of ["\r\n", "\n"] as const) {
+      const originalFirst = `${plainOriginalText}${separator}`;
+      if (plainSavedText.startsWith(originalFirst)) {
+        return plainSavedText.slice(originalFirst.length);
+      }
+
+      const originalLast = `${separator}${plainOriginalText}`;
+      if (plainSavedText.endsWith(originalLast)) {
+        return plainSavedText.slice(0, -originalLast.length);
+      }
     }
   }
 

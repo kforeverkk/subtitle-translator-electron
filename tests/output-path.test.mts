@@ -2,49 +2,68 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 import {
-  getTargetLanguageCode,
+  getLanguageCode,
+  getSubtitleLanguageSuffix,
   getTranslatedPath,
 } from "../electron/main/utils/output-path.ts";
 
-test("maps target language names to ISO 639-1 output suffixes", () => {
-  assert.equal(getTargetLanguageCode("English"), "en");
-  assert.equal(getTargetLanguageCode("法语"), "fr");
-  assert.equal(getTargetLanguageCode("日本語"), "ja");
-  assert.equal(getTargetLanguageCode("en-US"), "en");
+test("maps supported language names and codes", () => {
+  assert.equal(getLanguageCode("Italian"), "it");
+  assert.equal(getLanguageCode("意大利语"), "it");
+  assert.equal(getLanguageCode("en-US"), "en");
+  assert.equal(getLanguageCode("Tongan"), undefined);
+  assert.equal(getLanguageCode("to"), undefined);
 });
 
-test("uses the target language code in the translated subtitle path", () => {
+test("names translated-only output with the target language", () => {
+  assert.equal(getSubtitleLanguageSuffix("srt-translation", "English"), "en");
   assert.equal(
-    getTranslatedPath(
-      path.join("video", "movie.srt"),
-      undefined,
-      undefined,
-      undefined,
-      "English"
-    ),
-    path.join("video", "movie.en.srt")
-  );
-  assert.equal(
-    getTranslatedPath(
-      path.join("video", "movie.ass"),
-      path.resolve("output"),
-      undefined,
-      undefined,
-      "French"
-    ),
-    path.join(path.resolve("output"), "movie.fr.ass")
+    getSubtitleLanguageSuffix("srt-translation", "Vatican language"),
+    "translated"
   );
 });
 
-test("falls back to translated for an unrecognized target language", () => {
+test("names bilingual output in visual top-to-bottom language order", () => {
+  assert.equal(
+    getSubtitleLanguageSuffix("srt-bilingual", "English", "Chinese"),
+    "en-zh"
+  );
+  assert.equal(
+    getSubtitleLanguageSuffix(
+      "ass-original-translation",
+      "English",
+      "Chinese"
+    ),
+    "zh-en"
+  );
+  assert.equal(
+    getSubtitleLanguageSuffix(
+      "srt-bilingual",
+      "Vatican language",
+      "Tongan"
+    ),
+    "translated-original"
+  );
+  assert.equal(
+    getSubtitleLanguageSuffix(
+      "srt-original-translation",
+      "Vatican language",
+      "Tongan"
+    ),
+    "original-translated"
+  );
+});
+
+test("uses model-detected source language and removes an existing language suffix", () => {
   assert.equal(
     getTranslatedPath(
-      path.join("video", "movie.vtt"),
+      path.join("subtitles", "movie.zh.srt"),
+      "srt-bilingual",
       undefined,
-      undefined,
-      undefined,
-      "Klingon"
+      "movie.zh.srt",
+      "English",
+      "Italian"
     ),
-    path.join("video", "movie.translated.vtt")
+    path.join("subtitles", "movie.en-it.srt")
   );
 });

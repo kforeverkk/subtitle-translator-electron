@@ -38,6 +38,12 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Set Version from Tag
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: pnpm version "$RELEASE_VERSION" --no-git-tag-version --allow-same-version
+
       - name: Build Release Files
         run: pnpm run build
 

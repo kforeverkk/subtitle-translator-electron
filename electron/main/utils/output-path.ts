@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { SubtitleOutputFormat } from "./subtitle-output";
 
 const languageAliases: Record<string, string> = {
   english: "en",
@@ -10,11 +11,11 @@ const languageAliases: Record<string, string> = {
   francais: "fr",
   法语: "fr",
   法語: "fr",
-  日语: "ja",
-  日語: "ja",
+  japanese: "ja",
   日本语: "ja",
   日本語: "ja",
-  japanese: "ja",
+  日语: "ja",
+  日語: "ja",
   german: "de",
   deutsch: "de",
   德语: "de",
@@ -38,6 +39,12 @@ const languageAliases: Record<string, string> = {
   韩语: "ko",
   韓語: "ko",
   chinese: "zh",
+  mandarin: "zh",
+  mandarinchinese: "zh",
+  simplifiedchinese: "zh",
+  traditionalchinese: "zh",
+  chinesesimplified: "zh",
+  chinesetraditional: "zh",
   中文: "zh",
   汉语: "zh",
   漢語: "zh",
@@ -55,31 +62,80 @@ const languageAliases: Record<string, string> = {
   阿拉伯語: "ar",
 };
 
-export function getTargetLanguageCode(targetLanguage?: string): string | undefined {
-  const normalized = targetLanguage
+const supportedLanguageCodes = new Set(Object.values(languageAliases));
+
+function normalizeLanguage(value?: string): string | undefined {
+  const normalized = value
     ?.trim()
     .toLocaleLowerCase("en-US")
     .replaceAll(/[\s_()（）]+/g, "");
+  return normalized || undefined;
+}
+
+export function getLanguageCode(language?: string): string | undefined {
+  const normalized = normalizeLanguage(language);
   if (!normalized) return undefined;
 
   const alias = languageAliases[normalized];
   if (alias) return alias;
 
   const localeMatch = normalized.match(/^([a-z]{2})(?:-[a-z]{2,4})?$/i);
-  return localeMatch?.[1].toLowerCase();
+  const code = localeMatch?.[1].toLowerCase();
+  return code && supportedLanguageCodes.has(code) ? code : undefined;
+}
+
+function stripExistingLanguageSuffix(sourceName: string): string {
+  const extension = path.extname(sourceName);
+  const basename = path.basename(sourceName, extension);
+  const suffixIndex = basename.lastIndexOf(".");
+  if (suffixIndex < 0) return basename;
+
+  const suffix = basename.slice(suffixIndex + 1);
+  const normalizedSuffix = suffix.toLocaleLowerCase("en-US");
+  return getLanguageCode(suffix) ||
+    normalizedSuffix === "original" ||
+    normalizedSuffix === "translated"
+    ? basename.slice(0, suffixIndex)
+    : basename;
+}
+
+export function getSubtitleLanguageSuffix(
+  outputFormat: SubtitleOutputFormat,
+  targetLanguage?: string,
+  detectedSourceLanguage?: string
+): string {
+  const targetCode = getLanguageCode(targetLanguage) ?? "translated";
+  const sourceCode = getLanguageCode(detectedSourceLanguage) ?? "original";
+
+  switch (outputFormat) {
+    case "srt-translation":
+      return targetCode;
+    case "srt-bilingual":
+    case "ass-bilingual":
+      return `${targetCode}-${sourceCode}`;
+    case "srt-original-translation":
+    case "ass-original-translation":
+      return `${sourceCode}-${targetCode}`;
+  }
 }
 
 export function getTranslatedPath(
   filePath: string,
+  outputFormat: SubtitleOutputFormat,
   outputDirectory?: string,
   sourceName = path.basename(filePath),
-  sourceExtension = path.extname(filePath).slice(1).toLowerCase(),
-  targetLanguage?: string
+  targetLanguage?: string,
+  detectedSourceLanguage?: string
 ): string {
-  const basename = path.basename(sourceName, path.extname(sourceName));
-  const languageCode = getTargetLanguageCode(targetLanguage) ?? "translated";
+  const basename = stripExistingLanguageSuffix(sourceName);
+  const suffix = getSubtitleLanguageSuffix(
+    outputFormat,
+    targetLanguage,
+    detectedSourceLanguage
+  );
+  const extension = outputFormat.startsWith("ass-") ? "ass" : "srt";
   return path.join(
     outputDirectory ?? path.dirname(filePath),
-    `${basename}.${languageCode}.${sourceExtension}`
+    `${basename}.${suffix}.${extension}`
   );
 }

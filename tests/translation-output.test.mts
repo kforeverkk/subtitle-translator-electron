@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  assertCompleteTranslationOutput,
+  createTranslationOutputValidationError,
   isCompletedModelFinishReason,
+  parseTranslationOutput,
   TranslationOutputRepetitionGuard,
+  validateTranslationOutputForCore,
 } from "../electron/main/utils/translation-output.ts";
-import { translationErrorCodes } from "../electron/shared/translation-error-codes.ts";
 
 test("accepts only a normally completed model response", () => {
   assert.equal(isCompletedModelFinishReason("stop"), true);
@@ -13,16 +14,40 @@ test("accepts only a normally completed model response", () => {
   assert.equal(isCompletedModelFinishReason("content-filter"), false);
 });
 
-test("uses the incomplete-model error code for incomplete translation batches", () => {
+test("accepts wrapped and bare translation arrays from compatible endpoints", () => {
+  const translations = ["第一行", "第二行"];
+
+  assert.deepEqual(
+    parseTranslationOutput({ elements: translations }),
+    translations
+  );
+  assert.deepEqual(parseTranslationOutput(translations), translations);
+});
+
+test("rejects malformed translation output", () => {
   assert.throws(
-    () =>
-      assertCompleteTranslationOutput(
-        ["One", "Two", "Three"],
-        ["一", "二"]
-      ),
-    new RegExp(
-      `${translationErrorCodes.incompleteModelOutput}: expected 3 non-empty subtitles, got 2`
-    )
+    () => parseTranslationOutput({ elements: ["第一行", 2] }),
+    /ERR_INCOMPLETE_MODEL_OUTPUT/
+  );
+  assert.throws(
+    () => parseTranslationOutput({ translations: ["第一行"] }),
+    /ERR_INCOMPLETE_MODEL_OUTPUT/
+  );
+});
+
+test("validates translation count and non-empty subtitles", () => {
+  assert.equal(
+    createTranslationOutputValidationError(["第一行", "第二行"], ["A", "B"]),
+    undefined
+  );
+
+  assert.throws(
+    () => validateTranslationOutputForCore(["第一行", "第二行", "第三行"], ["A", "B"]),
+    /ERR_INCOMPLETE_MODEL_OUTPUT: expected 2 non-empty subtitles, got 3/
+  );
+  assert.throws(
+    () => validateTranslationOutputForCore(["第一行", ""], ["A", "B"]),
+    /expected 2 non-empty subtitles, got 2/
   );
 });
 

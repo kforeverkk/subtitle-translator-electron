@@ -3,9 +3,9 @@ import path from "node:path";
 import { parseSync, stringifySync, type NodeList } from "subtitle";
 import assParser from "ass-parser";
 import assStringify from "ass-stringify";
-import { z } from "zod";
 import { generateText, Output, streamText } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { z } from "zod";
 import { translationErrorCodes } from "../../shared/translation-error-codes";
 import type { RequestRateLimiter } from "./request-rate-limiter";
 import { compactRepetitiveSubtitleText } from "./subtitle-chunks";
@@ -16,10 +16,23 @@ import {
   subtitleAnalysisSchema,
 } from "./analysis-output";
 import {
-  assertCompleteTranslationOutput,
   isCompletedModelFinishReason,
+  parseTranslationOutput,
   TranslationOutputRepetitionGuard,
+  validateTranslationOutputForCore,
 } from "./translation-output";
+import {
+  addAssBilingualStyles,
+  formatAssBilingualStyledText,
+  type AssBilingualFontOptions,
+} from "./ass-bilingual";
+import {
+  assTextToPlainText,
+  createDefaultAssSections,
+  formatSrtOutputText,
+  subtitleTimestampToMilliseconds,
+  type SubtitleOutputFormat,
+} from "./subtitle-output";
 
 export interface SubtitleCueData {
   text: string;
@@ -43,7 +56,7 @@ interface SubtitleHeader {
 interface AssDescriptor {
   key?: string;
   type?: string;
-  value?: Record<string, string> | string;
+  value?: Record<string, string> | string | string[];
   [key: string]: unknown;
 }
 
@@ -59,11 +72,6 @@ export interface AssSubtitle {
 }
 
 export type ParsedSubtitle = Array<SubtitleCue | SubtitleHeader> | AssSubtitle;
-export type MultiLanguageSave =
-  | "none"
-  | "translate+original"
-  | "original+translate";
-
 export interface SubtitleTranslationChunk {
   before: string[];
   core: string[];
@@ -278,78 +286,82 @@ async function translateSubtitleChunk(
     .replaceAll("{{lang}}", lang)
     .replaceAll("{{additional}}", additional);
 
-  await requestRateLimiter?.waitForSlot(abortSignal);
   const repetitionController = new AbortController();
   const requestAbortSignal = abortSignal
     ? AbortSignal.any([abortSignal, repetitionController.signal])
     : repetitionController.signal;
-  const repetitionGuards = new Map<
-    string,
-    TranslationOutputRepetitionGuard
-  >();
-  let stoppedForRepetition = false;
 
-  const result = streamText({
-    model: ai(model),
-    temperature,
-    system: systemPrompt,
-    output: Output.array({
-      element: z.string().describe("The translated subtitle"),
-      description:
-        "Return one translated subtitle for each core subtitle, in the same order.",
-    }),
-    prompt:
-      `Translate only the \`core\` subtitles. Use \`before\` and \`after\` only as context. ` +
-      `Return a JSON object with one \`elements\` array containing exactly ${core.length} translated strings ` +
-      `in the same order as \`core\`, with no other properties.\n\n` +
-      `A bracketed note such as [source phrase repeats N times total] is input metadata, not subtitle text. ` +
-      `Interpret repeated source phrases naturally and never output the bracketed note.\n\n` +
-      JSON.stringify({
-        before: compactedBefore,
-        core: compactedCore,
-        after: compactedAfter,
-      }),
-    maxRetries: 0,
-    abortSignal: requestAbortSignal,
-    onChunk({ chunk }) {
-      if (
-        chunk.type !== "text-delta" &&
-        chunk.type !== "reasoning-delta"
-      ) {
-        return;
+  const translationOutput = Output.json();
+
+  const runTranslationRequest = async (requestPrompt: string) => {
+    await requestRateLimiter?.waitForSlot(abortSignal);
+    const repetitionGuards = new Map<
+      string,
+      TranslationOutputRepetitionGuard
+    >();
+    let stoppedForRepetition = false;
+
+    const result = streamText({
+      model: ai(model),
+      temperature,
+      system: systemPrompt,
+      output: translationOutput,
+      prompt: requestPrompt,
+      maxRetries: 0,
+      abortSignal: requestAbortSignal,
+      onChunk({ chunk }) {
+        if (
+          chunk.type !== "text-delta" &&
+          chunk.type !== "reasoning-delta"
+        ) {
+          return;
+        }
+
+        const guardKey = `${chunk.type}:${chunk.id}`;
+        const guard =
+          repetitionGuards.get(guardKey) ??
+          new TranslationOutputRepetitionGuard();
+        repetitionGuards.set(guardKey, guard);
+
+        if (guard.push(chunk.text)) {
+          stoppedForRepetition = true;
+          repetitionController.abort(
+            new Error(translationErrorCodes.repetitiveModelOutput)
+          );
+        }
+      },
+    });
+
+    try {
+      const finishReason = await result.finishReason;
+      if (!isCompletedModelFinishReason(finishReason)) {
+        throw new Error(translationErrorCodes.incompleteModelOutput);
       }
-
-      const guardKey = `${chunk.type}:${chunk.id}`;
-      const guard =
-        repetitionGuards.get(guardKey) ??
-        new TranslationOutputRepetitionGuard();
-      repetitionGuards.set(guardKey, guard);
-
-      if (guard.push(chunk.text)) {
-        stoppedForRepetition = true;
-        repetitionController.abort(
-          new Error(translationErrorCodes.repetitiveModelOutput)
-        );
+      return parseTranslationOutput(await result.output);
+    } catch (error) {
+      if (stoppedForRepetition && !abortSignal?.aborted) {
+        throw new Error(translationErrorCodes.repetitiveModelOutput);
       }
-    },
-  });
-
-  let output: string[];
-  try {
-    const finishReason = await result.finishReason;
-    if (!isCompletedModelFinishReason(finishReason)) {
-      throw new Error(translationErrorCodes.incompleteModelOutput);
+      throw error;
     }
-    output = await result.output;
-  } catch (error) {
-    if (stoppedForRepetition && !abortSignal?.aborted) {
-      throw new Error(translationErrorCodes.repetitiveModelOutput);
-    }
-    throw error;
-  }
+  };
 
-  assertCompleteTranslationOutput(core, output);
+  const initialPrompt =
+    `Translate only the \`core\` subtitles. Use \`before\` and \`after\` only as context. ` +
+    `Return a JSON object with one \`elements\` array containing exactly ${core.length} translated strings ` +
+    `in the same order as \`core\`, with no other properties.\n` +
+    `This is a one-to-one mapping: \`elements[0]\` translates \`core[0]\`, \`elements[1]\` translates \`core[1]\`, and so on. ` +
+    `Do not add, remove, split, merge, summarize, explain, or renumber subtitles.\n\n` +
+    `A bracketed note such as [source phrase repeats N times total] is input metadata, not subtitle text. ` +
+    `Interpret repeated source phrases naturally and never output the bracketed note.\n\n` +
+    JSON.stringify({
+      before: compactedBefore,
+      core: compactedCore,
+      after: compactedAfter,
+    });
 
+  const output = await runTranslationRequest(initialPrompt);
+  validateTranslationOutputForCore(output, compactedCore);
   return output;
 }
 
@@ -371,6 +383,7 @@ function parseSubtitle(
           line.key === "Dialogue" &&
           typeof line.value === "object" &&
           line.value !== null &&
+          !Array.isArray(line.value) &&
           typeof line.value.Text === "string"
       )
       .map((line) => {
@@ -389,49 +402,63 @@ function parseSubtitle(
   throw new Error(translationErrorCodes.unsupportedFileExtension);
 }
 
+function createAssSubtitleFromCues(events: SubtitleCue[]): AssSubtitle {
+  return {
+    events,
+    full: createDefaultAssSections(events) as AssSection[],
+  };
+}
+
 function saveTranslated(
   outputPath: string,
   parsedSubtitle: ParsedSubtitle,
-  fileExtension: string,
-  multiLangSave: MultiLanguageSave = "none"
+  outputFormat: SubtitleOutputFormat,
+  assFonts: AssBilingualFontOptions = {}
 ): void {
-  function parseTranslatedText(
-    originalSubtitle: string = "",
-    translatedText: string = "",
-    splitText: string = "\n"
-  ) {
-    switch (multiLangSave) {
-      case "none":
-        return translatedText;
-      case "translate+original":
-        return `${translatedText}${splitText}${originalSubtitle}`;
-      case "original+translate":
-        return `${originalSubtitle}${splitText}${translatedText}`;
-      default:
-        return translatedText;
-    }
-  }
-
   let newSubtitle = "";
-  if (Array.isArray(parsedSubtitle)) {
-    const format = fileExtension === "vtt" ? "WebVTT" : "SRT";
-    const translatedNodes = parsedSubtitle.map((node) => {
-      if (!isCue(node)) return node;
+  if (
+    outputFormat === "srt-translation" ||
+    outputFormat === "srt-bilingual" ||
+    outputFormat === "srt-original-translation"
+  ) {
+    const sourceIsAss = !Array.isArray(parsedSubtitle);
+    const translatedNodes = getSubtitleCues(parsedSubtitle).map((node) => {
+      const originalText = sourceIsAss
+        ? assTextToPlainText(node.data.text)
+        : node.data.text;
+      const translatedText = sourceIsAss
+        ? assTextToPlainText(node.data.translatedText ?? node.data.text)
+        : node.data.translatedText ?? node.data.text;
       return {
         type: node.type,
         data: {
-          ...node.data,
-          text: parseTranslatedText(
-            node.data.text,
-            node.data.translatedText ?? node.data.text
-          ),
+          start: subtitleTimestampToMilliseconds(node.data.start),
+          end: subtitleTimestampToMilliseconds(node.data.end),
+          text: formatSrtOutputText({
+            originalText,
+            translatedText,
+            outputFormat,
+          }),
         },
       };
     });
-    // SRT/WebVTT cues parsed by `subtitle` always use numeric timestamps.
-    newSubtitle = stringifySync(translatedNodes as NodeList, { format });
+    newSubtitle = stringifySync(translatedNodes as NodeList, { format: "SRT" });
   } else {
-    const { full, events } = parsedSubtitle;
+    const canPreserveAssStyles =
+      !Array.isArray(parsedSubtitle) &&
+      parsedSubtitle.full.some(
+        (section) =>
+          section.section === "V4+ Styles" &&
+          section.body?.some((line) => line.key === "Style")
+      );
+    const assSubtitle = canPreserveAssStyles
+      ? (parsedSubtitle as AssSubtitle)
+      : createAssSubtitleFromCues(getSubtitleCues(parsedSubtitle));
+    const { full, stylesBySource } = addAssBilingualStyles(
+      assSubtitle.full,
+      assFonts
+    );
+    const events = assSubtitle.events;
     // Use sequential alignment with Events order instead of text matching to avoid misalignment
     let dialogueIndex = 0;
     newSubtitle = assStringify(
@@ -446,24 +473,40 @@ function saveTranslated(
                   currentEvent &&
                   currentEvent.data.translatedText &&
                   typeof line.value === "object" &&
-                  line.value !== null
+                  line.value !== null &&
+                  !Array.isArray(line.value)
                     ? currentEvent.data.translatedText
-                    : typeof line.value === "object" && line.value !== null
+                    : typeof line.value === "object" &&
+                        line.value !== null &&
+                        !Array.isArray(line.value)
                       ? line.value.Text ?? ""
                       : "";
                 const value =
-                  typeof line.value === "object" && line.value !== null
+                  typeof line.value === "object" &&
+                  line.value !== null &&
+                  !Array.isArray(line.value)
                     ? line.value
                     : {};
+                const styleNames =
+                  stylesBySource.get(value.Style ?? "Default") ??
+                  stylesBySource.get("Default") ??
+                  stylesBySource.values().next().value;
                 return {
                   key: "Dialogue",
                   value: {
                     ...value,
-                    Text: parseTranslatedText(
-                      value.Text,
-                      translatedText,
-                      "\\n"
-                    ),
+                    Text: styleNames
+                      ? formatAssBilingualStyledText({
+                          originalText: value.Text ?? "",
+                          translatedText,
+                          order:
+                            outputFormat === "ass-original-translation"
+                              ? "original+translate"
+                              : "translate+original",
+                          translationStyle: styleNames.translation,
+                          originalStyle: styleNames.original,
+                        })
+                      : translatedText,
                   },
                 };
               }
@@ -519,12 +562,7 @@ async function analyzeSubtitlesForContext(
   const result = await generateText({
     model: ai(model),
     temperature,
-    output: Output.object({
-      name: "SubtitleAnalysis",
-      description:
-        "A plot summary and glossary extracted from subtitle samples.",
-      schema: subtitleAnalysisSchema,
-    }),
+    output: Output.json(),
     system: `# System Prompt
 
 You are a subtitle content analyst assisting a translation and glossary extraction system.
@@ -558,7 +596,55 @@ Analyze subtitle samples and return one JSON object with exactly these propertie
     throw new Error(translationErrorCodes.incompleteModelOutput);
   }
 
-  return formatSubtitleAnalysis(result.output);
+  return formatSubtitleAnalysis(subtitleAnalysisSchema.parse(result.output));
+}
+
+async function detectSubtitleLanguage(
+  subtitles: string[],
+  {
+    apiKeys,
+    apiHost,
+    model,
+    requestRateLimiter,
+    abortSignal,
+  }: {
+    apiKeys: string[];
+    apiHost: string;
+    model: string;
+    requestRateLimiter?: RequestRateLimiter;
+    abortSignal?: AbortSignal;
+  }
+): Promise<string> {
+  const sampledSubtitles = sampleSubtitlesForAnalysis(subtitles);
+  if (sampledSubtitles.length === 0) return "";
+
+  const ai = getAi({ apiKey: getFirstValidApiKey(apiKeys), apiHost });
+  await requestRateLimiter?.waitForSlot(abortSignal);
+  const result = await generateText({
+    model: ai(model),
+    temperature: 0,
+    output: Output.json(),
+    system: `Detect the primary spoken language of subtitle samples.
+Return one JSON object with exactly one property named "language".
+The value must be the language's common English name. Do not infer the language from filenames and do not explain the answer.`,
+    prompt: sampledSubtitles.join("\n"),
+    maxRetries: 0,
+    abortSignal,
+  });
+
+  if (!isCompletedModelFinishReason(result.finishReason)) {
+    throw new Error(translationErrorCodes.incompleteModelOutput);
+  }
+
+  const parsed = z
+    .object({ language: z.string().trim().min(1) })
+    .safeParse(result.output);
+  if (!parsed.success) {
+    throw new Error(
+      `${translationErrorCodes.incompleteModelOutput}: invalid language detection output`
+    );
+  }
+  return parsed.data.language;
 }
 
 export {
@@ -566,4 +652,5 @@ export {
   parseSubtitle,
   saveTranslated,
   analyzeSubtitlesForContext,
+  detectSubtitleLanguage,
 };

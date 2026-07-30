@@ -6,6 +6,7 @@ import {
   Menu,
   shell,
   type MenuItemConstructorOptions,
+  type Session,
   type WebFrameMain,
   type WebContents,
 } from "electron";
@@ -31,9 +32,13 @@ import {
   translateSubtitleChunk,
   saveTranslated,
   analyzeSubtitlesForContext,
+  detectSubtitleLanguage,
   getSubtitleCues,
 } from "./utils/translate";
 import { createSubtitlePreview } from "./utils/subtitle-preview";
+import { normalizeAssFontName } from "./utils/ass-bilingual";
+import { subtitleOutputFormats } from "./utils/subtitle-output";
+import { getTranslatedPath } from "./utils/output-path";
 import { shouldAnalyzeSubtitles } from "./utils/subtitle-sampling";
 import { fetchAvailableModels } from "./utils/models";
 import { RequestRateLimiter } from "./utils/request-rate-limiter";
@@ -47,7 +52,6 @@ import {
   getPathClaimKey,
   hasPathClaimConflict,
 } from "./utils/path-claims";
-import { getTranslatedPath } from "./utils/output-path";
 import {
   createTranslationConfigFingerprint,
   getTranslationCheckpointCandidates,
@@ -148,7 +152,13 @@ const translationParamsSchema = z.object({
   lang: z.string(),
   additional: z.string(),
   temperature: z.number().finite().min(0).max(2),
-  multiLangSave: z.enum(["none", "translate+original", "original+translate"]),
+  outputFormat: z.enum(subtitleOutputFormats),
+  assFonts: z
+    .object({
+      translationFont: z.string().max(100).transform(normalizeAssFontName),
+      originalFont: z.string().max(100).transform(normalizeAssFontName),
+    })
+    .default({ translationFont: "", originalFont: "" }),
   concurrency: z
     .union([
       z.literal(1),
@@ -203,15 +213,13 @@ function assertTranslationInputFile(filePath: string): Stats {
   return fileInfo;
 }
 
-function isTrustedSender(frame: WebFrameMain | null): boolean {
-  if (!frame) return false;
-
+function isTrustedApplicationUrl(frameUrl: string): boolean {
   try {
     if (url) {
-      return new URL(frame.url).origin === new URL(url).origin;
+      return new URL(frameUrl).origin === new URL(url).origin;
     }
 
-    const actualUrl = new URL(frame.url);
+    const actualUrl = new URL(frameUrl);
     const expectedUrl = new URL(packagedIndexUrl);
     return (
       actualUrl.protocol === expectedUrl.protocol &&
@@ -220,6 +228,10 @@ function isTrustedSender(frame: WebFrameMain | null): boolean {
   } catch {
     return false;
   }
+}
+
+function isTrustedSender(frame: WebFrameMain | null): boolean {
+  return frame !== null && isTrustedApplicationUrl(frame.url);
 }
 
 function assertTrustedSender(event: { senderFrame: WebFrameMain | null }): void {
@@ -716,6 +728,34 @@ function createApplicationMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+function configureSessionPermissions(applicationSession: Session): void {
+  const isTrustedLocalFontsRequest = (
+    permission: string,
+    requestingUrl: string | undefined
+  ) =>
+    permission === "local-fonts" &&
+    typeof requestingUrl === "string" &&
+    isTrustedApplicationUrl(requestingUrl);
+
+  applicationSession.setPermissionCheckHandler(
+    (webContents, permission, requestingOrigin, details) =>
+      isTrustedLocalFontsRequest(
+        permission,
+        details.requestingUrl || webContents?.getURL() || requestingOrigin
+      )
+  );
+  applicationSession.setPermissionRequestHandler(
+    (webContents, permission, callback, details) => {
+      callback(
+        isTrustedLocalFontsRequest(
+          permission,
+          details.requestingUrl || webContents.getURL()
+        )
+      );
+    }
+  );
+}
+
 function createWindow() {
   win = new BrowserWindow({
     title: "Main window",
@@ -740,6 +780,8 @@ function createWindow() {
           backgroundMaterial: "mica", // on Windows 11
         }),
   });
+
+  configureSessionPermissions(win.webContents.session);
 
   loadRenderer(win);
   // Open devTool if the app is not packaged
@@ -915,15 +957,42 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       const indexMap = new Map<SubtitleCue, number>();
       subtitle.forEach((cue, idx) => indexMap.set(cue, idx));
 
+      const allTexts = subtitle
+        .map((cue) => cue.data.text)
+        .filter((text: string) => text && text.length > 0);
+      let detectedSourceLanguage = "";
+      try {
+        detectedSourceLanguage = await retryTranslate(
+          (texts) =>
+            detectSubtitleLanguage(texts, {
+              apiKeys: params.apiKeys,
+              apiHost: params.apiHost,
+              model: params.model,
+              requestRateLimiter,
+              abortSignal,
+            }),
+          allTexts,
+          params.delay,
+          abortSignal
+        );
+      } catch (languageDetectionError) {
+        abortSignal.throwIfAborted();
+        console.warn(
+          "Source language detection failed; using the original fallback:",
+          languageDetectionError
+        );
+      }
+
       const outputDirectory = getValidatedOutputDirectory(
         params.outputDirectory
       );
       const translatedOutputPath = getTranslatedPath(
         file.path,
+        params.outputFormat,
         outputDirectory,
         input.sourceName,
-        input.sourceExtension,
-        params.lang
+        params.lang,
+        detectedSourceLanguage
       );
       outputPath = translatedOutputPath;
       let analysisData = input.analysis;
@@ -969,8 +1038,8 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         saveTranslated(
           translatedOutputPath,
           parsed,
-          input.sourceExtension,
-          params.multiLangSave || "none"
+          params.outputFormat,
+          params.assFonts
         );
         await checkpointWriter.wait().catch((error: unknown) => {
           console.warn("Failed to finish translation checkpoint:", error);
@@ -990,10 +1059,6 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       }
 
       // Build analysis context (plot summary + glossary) and attach to all requests
-      const allTexts = subtitle
-        .map((cue) => cue.data.text)
-        .filter((t: string) => t && t.length > 0);
-
       const shouldAnalyze = shouldAnalyzeSubtitles(
         analysisData,
         allTexts.length,
@@ -1164,8 +1229,8 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
           saveTranslated(
             translatedOutputPath,
             parsed,
-            input.sourceExtension,
-            params.multiLangSave || "none"
+            params.outputFormat,
+            params.assFonts
           );
         } catch (e) {
           console.warn("Failed to write partial translated file:", e);
@@ -1202,8 +1267,8 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       saveTranslated(
         translatedOutputPath,
         parsed,
-        input.sourceExtension,
-        params.multiLangSave || "none"
+        params.outputFormat,
+        params.assFonts
       );
       await checkpointWriter.wait().catch((error: unknown) => {
         console.warn("Failed to finish translation checkpoint:", error);
@@ -1257,9 +1322,12 @@ ipcMain.handle("get-subtitle-preview", async (event, request: unknown) => {
   const { filePath: validatedPath, outputPath } =
     subtitlePreviewRequestSchema.parse(request);
   const input = readTranslationInput(validatedPath);
+  const requestedOutputExtension = outputPath
+    ? path.extname(outputPath).slice(1).toLowerCase()
+    : undefined;
   if (
-    outputPath &&
-    path.extname(outputPath).slice(1).toLowerCase() !== input.sourceExtension
+    requestedOutputExtension &&
+    !supportedExtensions.has(requestedOutputExtension as SubtitleFileExtension)
   ) {
     throw new Error(translationErrorCodes.unsupportedFileExtension);
   }
@@ -1288,20 +1356,23 @@ ipcMain.handle("get-subtitle-preview", async (event, request: unknown) => {
   }
 
   if (!translatedSubtitle) {
+    const outputCandidates = subtitleOutputFormats.map((format) =>
+      getTranslatedPath(validatedPath, format, undefined, input.sourceName)
+    );
     const translatedPath =
       outputPath ??
-      getTranslatedPath(
-        validatedPath,
-        undefined,
-        input.sourceName,
-        input.sourceExtension
-      );
+      outputCandidates.find((candidate) => fs.existsSync(candidate)) ??
+      outputCandidates[0];
 
     if (fs.existsSync(translatedPath)) {
       const translatedContent = fs.readFileSync(translatedPath, "utf8");
+      const translatedExtension = path
+        .extname(translatedPath)
+        .slice(1)
+        .toLowerCase();
       const translatedParsed: ParsedSubtitle = parseSubtitle(
         translatedContent,
-        input.sourceExtension
+        translatedExtension
       );
       translatedSubtitle = getSubtitleCues(translatedParsed);
     }

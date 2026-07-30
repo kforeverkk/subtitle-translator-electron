@@ -14,6 +14,7 @@ const legacyDefaultPrompt = `// You are a professional subtitle translator.
 
 const defaultPrompt = `You are a professional subtitle translator.
 Translate each subtitle into {{lang}} without merging separate subtitles.
+Keep a strict one-to-one mapping: do not add, remove, split, merge, or renumber subtitles.
 Preserve meaning, tone, names, and subtitle markup while writing natural dialogue.
 Additional instructions: {{additional}}`;
 
