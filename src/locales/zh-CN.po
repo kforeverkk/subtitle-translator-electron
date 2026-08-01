@@ -984,6 +984,11 @@ msgid "delay.description"
 msgstr "在翻译完成后休息多久才开始翻译下一行字幕，调高这个值可以有效避免因密钥使用频率过高导致失败的问题，单位为秒。"
 
 #. js-lingui-explicit-id
+#: src/i18n-messages.ts:243
+msgid "toast.nativeMenuSyncFailed"
+msgstr "界面语言已更改，但原生菜单未能更新。它将在下次启动应用时更新。"
+
+#. js-lingui-explicit-id
 #: src/i18n-messages.ts:127
 msgid "error.incompleteModelOutput"
 msgstr "模型在完成翻译前停止输出。请重试或改用其他模型。"

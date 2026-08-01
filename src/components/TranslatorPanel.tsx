@@ -8,7 +8,11 @@ import useDelay from "@/hooks/useDelay";
 import useRPM from "@/hooks/useRPM";
 import useTranslationConcurrency from "@/hooks/useTranslationConcurrency";
 import useTranslationSuccessCount from "@/hooks/useTranslationSuccessCount";
-import { reachedTranslationSuccessPrompt } from "@/utils/translation-success";
+import { getTranslationSuccessPromptCount } from "@/utils/translation-success";
+import {
+  markBatchInvocationFailed,
+  type FileProgress,
+} from "@/utils/batch-progress";
 import { useTranslation } from "@/i18n";
 import { useAPIHost, useAPIKeys, useTemperature } from "@/hooks/useOpenAI";
 import { getFilePath } from "@/utils/filePath";
@@ -98,12 +102,6 @@ import {
 import { cn } from "@/lib/utils";
 import MarkdownContent from "@/components/MarkdownContent";
 import FontPicker from "@/components/FontPicker";
-
-type FileProgress = Pick<BatchProgress, "progress" | "status"> &
-  Partial<Omit<BatchProgress, "progress" | "status" | "previewCues">> & {
-    model?: string;
-    targetLanguage?: string;
-  };
 
 type ModelLoadStatus = "idle" | "loading" | "success" | "error";
 type PreviewLoadStatus = "idle" | "loading" | "success" | "error";
@@ -209,7 +207,7 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
   const [translationSuccessCount, incrementTranslationSuccessCount] =
     useTranslationSuccessCount();
   const previousTranslationSuccessCountRef = useRef(translationSuccessCount);
-  const [coffeeBannerVisible, setCoffeeBannerVisible] = useState(false);
+  const [pendingCoffeePromptCount, setPendingCoffeePromptCount] = useState(0);
   const [outputFormat, setOutputFormat] = useLocalStorage<SubtitleOutputFormat>(
     "subtitle_output_format",
     "srt-translation"
@@ -261,15 +259,15 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
   const finalPreviewCuesRef = useRef(
     new Map<string, SubtitleCuePreview[]>()
   );
+  const completedTranslationPathsRef = useRef(new Set<string>());
 
   useEffect(() => {
-    if (
-      reachedTranslationSuccessPrompt(
-        previousTranslationSuccessCountRef.current,
-        translationSuccessCount
-      )
-    ) {
-      setCoffeeBannerVisible(true);
+    const newPromptCount = getTranslationSuccessPromptCount(
+      previousTranslationSuccessCountRef.current,
+      translationSuccessCount
+    );
+    if (newPromptCount > 0) {
+      setPendingCoffeePromptCount((count) => count + newPromptCount);
     }
     previousTranslationSuccessCountRef.current = translationSuccessCount;
   }, [translationSuccessCount]);
@@ -327,7 +325,11 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
           })
         );
       }
-      if (data.status === "done") {
+      if (
+        data.status === "done" &&
+        !completedTranslationPathsRef.current.has(data.filePath)
+      ) {
+        completedTranslationPathsRef.current.add(data.filePath);
         incrementTranslationSuccessCount();
         toast.success(
           t("toast.translationCompleted", {
@@ -606,6 +608,7 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
     if (translatableFiles.length === 0) return;
     for (const file of translatableFiles) {
       finalPreviewCuesRef.current.delete(file.path);
+      completedTranslationPathsRef.current.delete(file.path);
     }
     if (!lang.trim()) {
       toast.error(t("toast.targetLanguageRequired"));
@@ -656,9 +659,21 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
         },
       });
     } catch (error: unknown) {
+      const errorMessage = getLocalizedError(
+        error,
+        "toast.unknownError",
+        t
+      );
+      setBatchProgress((previous) =>
+        markBatchInvocationFailed(previous, translatableFiles, {
+          error: errorMessage,
+          model: translationModel,
+          targetLanguage: lang,
+        })
+      );
       toast.error(
         t("toast.translationJobFailed", {
-          error: getLocalizedError(error, "toast.unknownError", t),
+          error: errorMessage,
         })
       );
     } finally {
@@ -760,6 +775,24 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
         }}
       />
 
+      {pendingCoffeePromptCount > 0 && (
+        <div
+          className="shrink-0 border-b bg-background p-3"
+          role="region"
+          aria-label={t("about.buy_me_a_coffee")}
+          aria-live="polite"
+        >
+          <BuyMeACoffee
+            key={pendingCoffeePromptCount}
+            dismissible
+            className="m-0 mx-auto w-full max-w-2xl"
+            onDismiss={() =>
+              setPendingCoffeePromptCount((count) => Math.max(0, count - 1))
+            }
+          />
+        </div>
+      )}
+
       {files.length === 0 ? (
         <Empty className="border-0 px-5 py-10">
           <EmptyHeader>
@@ -775,13 +808,6 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
               {t("tasks.empty.chooseFile")}
             </Button>
           </EmptyContent>
-          {coffeeBannerVisible && (
-            <BuyMeACoffee
-              dismissible
-              className="w-full max-w-2xl"
-              onDismiss={() => setCoffeeBannerVisible(false)}
-            />
-          )}
           <p className="mt-auto pt-10 text-center text-xs text-muted-foreground">
             {t("tasks.empty.formats")}
             <br />

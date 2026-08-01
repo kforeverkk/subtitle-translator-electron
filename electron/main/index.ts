@@ -644,8 +644,9 @@ function configureWindowNavigation(browserWindow: BrowserWindow): void {
   });
 }
 
-function createAboutWindow(): void {
+function createAboutWindow(parentWindow: BrowserWindow): void {
   const nextAboutWindow = new BrowserWindow({
+    parent: parentWindow,
     title: getAboutLabel(),
     icon: join(process.env.PUBLIC, "favicon.ico"),
     width: 600,
@@ -680,13 +681,19 @@ function createAboutWindow(): void {
 }
 
 function openAboutWindow(): void {
+  const mainWindow = showOrCreateMainWindow();
   if (aboutWindow && !aboutWindow.isDestroyed()) {
-    if (aboutWindow.isMinimized()) aboutWindow.restore();
-    aboutWindow.focus();
-    return;
+    if (aboutWindow.getParentWindow() === mainWindow) {
+      if (aboutWindow.isMinimized()) aboutWindow.restore();
+      aboutWindow.focus();
+      return;
+    }
+
+    aboutWindow.close();
+    aboutWindow = null;
   }
 
-  createAboutWindow();
+  createAboutWindow(mainWindow);
 }
 
 function createApplicationMenu(): void {
@@ -756,8 +763,8 @@ function configureSessionPermissions(applicationSession: Session): void {
   );
 }
 
-function createWindow() {
-  win = new BrowserWindow({
+function createWindow(): BrowserWindow {
+  const nextWindow = new BrowserWindow({
     title: "Main window",
     icon: join(process.env.PUBLIC, "favicon.ico"),
     minWidth: 800,
@@ -780,13 +787,37 @@ function createWindow() {
           backgroundMaterial: "mica", // on Windows 11
         }),
   });
+  win = nextWindow;
 
-  configureSessionPermissions(win.webContents.session);
+  configureSessionPermissions(nextWindow.webContents.session);
 
-  loadRenderer(win);
+  loadRenderer(nextWindow);
   // Open devTool if the app is not packaged
   // win.webContents.openDevTools()
-  configureWindowNavigation(win);
+  configureWindowNavigation(nextWindow);
+
+  nextWindow.on("closed", () => {
+    if (win !== nextWindow) return;
+
+    win = null;
+    if (aboutWindow && !aboutWindow.isDestroyed()) {
+      aboutWindow.close();
+    }
+  });
+
+  return nextWindow;
+}
+
+function showOrCreateMainWindow(): BrowserWindow {
+  if (!win || win.isDestroyed()) {
+    win = null;
+    return createWindow();
+  }
+
+  if (win.isMinimized()) win.restore();
+  if (!win.isVisible()) win.show();
+  win.focus();
+  return win;
 }
 
 app.whenReady()
@@ -799,25 +830,15 @@ app.whenReady()
   });
 
 app.on("window-all-closed", () => {
-  win = null;
   if (process.platform !== "darwin") app.quit();
 });
 
 app.on("second-instance", () => {
-  if (win) {
-    // Focus on the main window if the user tried to open another
-    if (win.isMinimized()) win.restore();
-    win.focus();
-  }
+  showOrCreateMainWindow();
 });
 
 app.on("activate", () => {
-  const allWindows = BrowserWindow.getAllWindows();
-  if (allWindows.length) {
-    allWindows[0].focus();
-  } else {
-    createWindow();
-  }
+  showOrCreateMainWindow();
 });
 
 // Cache analysis per file so renderer can fetch it on demand

@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { dynamicActivate, useTranslation } from "@/i18n";
+import {
+  dynamicActivate,
+  syncNativeMenuLocale,
+  useTranslation,
+} from "@/i18n";
 import { useLocalStorage } from "usehooks-ts";
+import { toast } from "sonner";
 import { useAPIHost, useAPIKeys, useAPIProvider, useTemperature } from "@/hooks/useOpenAI";
 import useDelay from "@/hooks/useDelay";
 import useRPM from "@/hooks/useRPM";
@@ -120,6 +125,12 @@ export default function Settings() {
   const changeLanguage = async (nextLanguage: string) => {
     const activatedLocale = await dynamicActivate(nextLanguage);
     setLanguage(activatedLocale);
+    try {
+      await syncNativeMenuLocale(activatedLocale);
+    } catch (error: unknown) {
+      console.error("Failed to sync native menu locale:", error);
+      toast.warning(t("toast.nativeMenuSyncFailed"));
+    }
   };
 
   const changeProvider = (nextProvider: keyof typeof providerPresets) => {

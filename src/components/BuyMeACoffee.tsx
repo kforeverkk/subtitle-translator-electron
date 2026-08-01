@@ -70,8 +70,11 @@ export default function BuyMeACoffee({
           size="icon-sm"
           className="absolute top-2 right-2 rounded-full text-muted-foreground"
           onClick={() => {
-            setIsVisible(false);
-            onDismiss?.();
+            if (onDismiss) {
+              onDismiss();
+            } else {
+              setIsVisible(false);
+            }
           }}
           aria-label={t("translate.close")}
           title={t("translate.close")}

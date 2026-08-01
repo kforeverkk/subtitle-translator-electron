@@ -37,7 +37,8 @@
     "perMachine": false,
     "deleteAppDataOnUninstall": false
   },
-  "linux":{
+  "linux": {
+    "artifactName": "subtitle-translator_${version}.${ext}",
     "target": [
       {
         "target": "AppImage",

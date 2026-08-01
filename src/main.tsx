@@ -40,7 +40,9 @@ const initialLocale = parseStoredLocale(localStorage.getItem("language"));
 
 async function bootstrap() {
   const activatedLocale = await dynamicActivate(initialLocale);
-  syncNativeMenuLocale(activatedLocale);
+  void syncNativeMenuLocale(activatedLocale).catch((error: unknown) => {
+    console.error("Failed to sync native menu locale:", error);
+  });
 
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <StrictMode>

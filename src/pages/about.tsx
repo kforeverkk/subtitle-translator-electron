@@ -13,7 +13,8 @@ import { useCommitSha, useVersion } from "@/hooks/useVersion";
 import { useTranslation } from "@/i18n";
 import { Bug, GitFork } from "lucide-react";
 
-const repositoryUrl = "https://github.com/gnehs/subtitle-translator-electron";
+const repositoryUrl =
+  "https://github.com/kforeverkk/subtitle-translator-electron";
 
 export default function About() {
   const { t } = useTranslation();

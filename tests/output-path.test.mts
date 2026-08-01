@@ -67,3 +67,78 @@ test("uses model-detected source language and removes an existing language suffi
     path.join("subtitles", "movie.en-it.srt")
   );
 });
+
+test("never writes translated-only output back to the input subtitle", () => {
+  assert.equal(
+    getTranslatedPath(
+      path.join("subtitles", "movie.en.srt"),
+      "srt-translation",
+      undefined,
+      "movie.en.srt",
+      "English"
+    ),
+    path.join("subtitles", "movie.translated.en.srt")
+  );
+  assert.equal(
+    getTranslatedPath(
+      path.join("subtitles", "movie.translated.en.srt"),
+      "srt-translation",
+      undefined,
+      "movie.translated.en.srt",
+      "English"
+    ),
+    path.join("subtitles", "movie.en.srt")
+  );
+});
+
+test("removes only a generated suffix from irregular release filenames", () => {
+  const sourceName =
+    "Libertalia（Safia Benhaïm）.2025.1080p..translated.en.srt";
+  const filePath = path.join("subtitles", sourceName);
+
+  assert.equal(
+    getTranslatedPath(
+      filePath,
+      "srt-translation",
+      undefined,
+      sourceName,
+      "French",
+      "English"
+    ),
+    path.join(
+      "subtitles",
+      "Libertalia（Safia Benhaïm）.2025.1080p.fr.srt"
+    )
+  );
+  assert.equal(
+    getTranslatedPath(
+      filePath,
+      "srt-bilingual",
+      undefined,
+      sourceName,
+      "French",
+      "English"
+    ),
+    path.join(
+      "subtitles",
+      "Libertalia（Safia Benhaïm）.2025.1080p.fr-en.srt"
+    )
+  );
+});
+
+test("removes a generated bilingual suffix without changing internal dots", () => {
+  assert.equal(
+    getTranslatedPath(
+      path.join("subtitles", "Some.translated.story.2025.fr-en.srt"),
+      "srt-original-translation",
+      undefined,
+      "Some.translated.story.2025.fr-en.srt",
+      "Japanese",
+      "English"
+    ),
+    path.join(
+      "subtitles",
+      "Some.translated.story.2025.en-ja.srt"
+    )
+  );
+});

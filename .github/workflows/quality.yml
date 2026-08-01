@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup pnpm
-        run: npm i -g pnpm
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -35,5 +35,22 @@ jobs:
       - name: Run Static Checks and Unit Tests
         run: pnpm run check
 
-      - name: Build Test Application
-        run: pnpm run pree2e
+      - name: Install Electron E2E System Dependencies
+        run: pnpm exec playwright install-deps chromium
+
+      - name: Run Electron E2E Tests
+        id: electron_e2e
+        env:
+          VITE_COMMIT_SHA: ${{ github.sha }}
+        run: xvfb-run --auto-servernum pnpm run e2e
+
+      - name: Upload Electron E2E Failure Report
+        if: failure() && steps.electron_e2e.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: electron-e2e-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 14

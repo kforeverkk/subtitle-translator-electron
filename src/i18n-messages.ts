@@ -240,4 +240,5 @@ export const messages = {
   "toast.translationJobFailed": defineMessage({ id: "toast.translationJobFailed", message: "Translation job failed: {error}" }),
   "toast.unknownError": defineMessage({ id: "toast.unknownError", message: "Unknown error" }),
   "toast.tasksAdded": defineMessage({ id: "toast.tasksAdded", message: "Added {count} task(s) and started translation" }),
+  "toast.nativeMenuSyncFailed": defineMessage({ id: "toast.nativeMenuSyncFailed", message: "The interface language changed, but the native menu could not be updated. It will update the next time the app starts." }),
 } satisfies Record<string, MessageDescriptor>;

@@ -64,6 +64,13 @@ const languageAliases: Record<string, string> = {
 
 const supportedLanguageCodes = new Set(Object.values(languageAliases));
 
+function getComparablePath(filePath: string): string {
+  const normalizedPath = path.resolve(filePath).normalize("NFC");
+  return process.platform === "win32" || process.platform === "darwin"
+    ? normalizedPath.toLowerCase()
+    : normalizedPath;
+}
+
 function normalizeLanguage(value?: string): string | undefined {
   const normalized = value
     ?.trim()
@@ -84,19 +91,49 @@ export function getLanguageCode(language?: string): string | undefined {
   return code && supportedLanguageCodes.has(code) ? code : undefined;
 }
 
-function stripExistingLanguageSuffix(sourceName: string): string {
+function isGeneratedBilingualSuffix(value: string): boolean {
+  const [first, second, ...rest] = value.split("-");
+  return (
+    rest.length === 0 &&
+    Boolean(first) &&
+    Boolean(second) &&
+    (getLanguageCode(first) !== undefined ||
+      first === "original" ||
+      first === "translated") &&
+    (getLanguageCode(second) !== undefined ||
+      second === "original" ||
+      second === "translated")
+  );
+}
+
+function stripGeneratedSubtitleSuffix(sourceName: string): string {
   const extension = path.extname(sourceName);
   const basename = path.basename(sourceName, extension);
-  const suffixIndex = basename.lastIndexOf(".");
-  if (suffixIndex < 0) return basename;
+  const parts = basename.split(".");
+  while (parts.at(-1) === "") parts.pop();
 
-  const suffix = basename.slice(suffixIndex + 1);
-  const normalizedSuffix = suffix.toLocaleLowerCase("en-US");
-  return getLanguageCode(suffix) ||
-    normalizedSuffix === "original" ||
-    normalizedSuffix === "translated"
-    ? basename.slice(0, suffixIndex)
-    : basename;
+  const suffix = parts.at(-1)?.toLocaleLowerCase("en-US");
+  if (!suffix) return basename;
+
+  if (
+    getLanguageCode(suffix) &&
+    parts.at(-2)?.toLocaleLowerCase("en-US") === "translated"
+  ) {
+    parts.pop();
+    parts.pop();
+  } else if (
+    getLanguageCode(suffix) ||
+    suffix === "original" ||
+    suffix === "translated" ||
+    isGeneratedBilingualSuffix(suffix)
+  ) {
+    parts.pop();
+  } else {
+    return basename;
+  }
+
+  while (parts.at(-1) === "") parts.pop();
+  return parts.join(".") || basename;
 }
 
 export function getSubtitleLanguageSuffix(
@@ -127,15 +164,29 @@ export function getTranslatedPath(
   targetLanguage?: string,
   detectedSourceLanguage?: string
 ): string {
-  const basename = stripExistingLanguageSuffix(sourceName);
+  const basename = stripGeneratedSubtitleSuffix(sourceName);
   const suffix = getSubtitleLanguageSuffix(
     outputFormat,
     targetLanguage,
     detectedSourceLanguage
   );
   const extension = outputFormat.startsWith("ass-") ? "ass" : "srt";
-  return path.join(
+  const outputPath = path.join(
     outputDirectory ?? path.dirname(filePath),
     `${basename}.${suffix}.${extension}`
+  );
+
+  if (
+    outputFormat !== "srt-translation" ||
+    getComparablePath(outputPath) !== getComparablePath(filePath)
+  ) {
+    return outputPath;
+  }
+
+  const safeSuffix =
+    suffix === "translated" ? "translated.2" : `translated.${suffix}`;
+  return path.join(
+    outputDirectory ?? path.dirname(filePath),
+    `${basename}.${safeSuffix}.${extension}`
   );
 }

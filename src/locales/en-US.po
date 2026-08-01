@@ -984,6 +984,11 @@ msgid "delay.description"
 msgstr "The delay between each translation request. This is used to prevent the API from being overloaded. The unit is in seconds."
 
 #. js-lingui-explicit-id
+#: src/i18n-messages.ts:243
+msgid "toast.nativeMenuSyncFailed"
+msgstr "The interface language changed, but the native menu could not be updated. It will update the next time the app starts."
+
+#. js-lingui-explicit-id
 #: src/i18n-messages.ts:127
 msgid "error.incompleteModelOutput"
 msgstr "The model stopped before producing a complete translation. Try again or choose a different model."
