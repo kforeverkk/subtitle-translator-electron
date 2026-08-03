@@ -7,6 +7,7 @@ import { generateText, Output, streamText } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { z } from "zod";
 import { translationErrorCodes } from "../../shared/translation-error-codes";
+import { getFirstValidApiKey } from "./api-account";
 import type { RequestRateLimiter } from "./request-rate-limiter";
 import {
   compactRepetitiveSubtitleText,
@@ -254,16 +255,6 @@ function getAi({ apiKey, apiHost }: { apiKey: string; apiHost: string }) {
       "X-Title": "Subtitle Translator",
     },
   });
-}
-
-function getFirstValidApiKey(apiKeys: readonly string[]): string {
-  const apiKey = apiKeys
-    .map((key) => key.trim())
-    .find((key) => key.length > 0);
-  if (!apiKey) {
-    throw new Error(translationErrorCodes.noValidApiKeys);
-  }
-  return apiKey;
 }
 
 async function translateSubtitleChunk(
