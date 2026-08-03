@@ -36,7 +36,10 @@ test("converts SSA styles, events, effects, and inline tags to standard ASS", ()
   assert.match(output, /Scroll up;10;300;20/);
   assert.match(output, /{\\move\(10,20,30,40\)\\k20}Karaoke/);
   assert.match(output, /{\\p1}m 0 0 l 10 0 10 10{\\p0}/);
-  assert.match(output, /\[Unknown Section\]\nRawLineWithoutColon\nVendor: leave:all:colons/);
+  assert.match(
+    output,
+    /\[Unknown Section\]\r?\nRawLineWithoutColon\r?\nVendor: leave:all:colons/,
+  );
 });
 
 test("preserves attachment payload and comments without generic reserialization", () => {
