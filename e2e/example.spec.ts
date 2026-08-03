@@ -12,6 +12,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
+import iconv from "iconv-lite";
 
 test.describe.configure({ mode: "serial" });
 
@@ -1428,6 +1429,172 @@ test("SSA conversion failure is explicit in the real GUI before API use", async 
     await expect(details).toContainText("choose SRT output");
     expect(requestBodies).toHaveLength(0);
     expect(readdirSync(temporaryDirectory).filter((name) => name.endsWith(".ass"))).toEqual([]);
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("the real GUI translates a confidently detected legacy-encoded subtitle", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-legacy-encoding-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "movie.srt");
+  const sourceSentence =
+    "简体中文字幕测试，这是一段用于识别编码并验证翻译内容的长文本。";
+  const sourceText = Array.from({ length: 20 }, (_, index) => {
+    const start = String(index).padStart(2, "0");
+    const end = String(index + 1).padStart(2, "0");
+    return `${index + 1}\n00:00:${start},000 --> 00:00:${end},000\n${sourceSentence}\n`;
+  }).join("\n");
+  writeFileSync(sourcePath, iconv.encode(sourceText, "gb18030"));
+
+  const requestBodies: string[] = [];
+  const mockServer = await startMockOpenAiServer({
+    onRequest: ({ bodyText }) => requestBodies.push(bodyText),
+    getStreamElements: (bodyText) => {
+      const count = Number(
+        bodyText.match(/exactly (\d+) translated strings/i)?.[1] ?? 1
+      );
+      return Array.from(
+        { length: count },
+        (_, index) => `Correct translation ${index + 1}`
+      );
+    },
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    await page.evaluate(
+      ({ apiHost }) => {
+        localStorage.clear();
+        localStorage.setItem("language", JSON.stringify("en-US"));
+        localStorage.setItem("api_keys", JSON.stringify(["test-key"]));
+        localStorage.setItem("api_host", JSON.stringify(apiHost));
+        localStorage.setItem("model", JSON.stringify("test-model"));
+        localStorage.setItem(
+          "prompt",
+          JSON.stringify("Translate every cue to {{lang}}. {{additional}}")
+        );
+        localStorage.setItem("translate_lang", JSON.stringify("English"));
+        localStorage.setItem("delay", JSON.stringify(0));
+        localStorage.setItem("requests_per_minute", JSON.stringify(1000));
+        localStorage.setItem("translation_concurrency", JSON.stringify(1));
+        localStorage.setItem(
+          "subtitle_output_format",
+          JSON.stringify("srt-translation")
+        );
+      },
+      { apiHost: mockServer.apiHost }
+    );
+    await page.reload();
+
+    await page.locator('input[type="file"]').setInputFiles(sourcePath);
+    const taskDialog = page.getByRole("dialog");
+    await expect(taskDialog).toBeVisible();
+    await taskDialog.getByRole("button", { name: "Add task" }).click();
+
+    const taskRow = page.getByRole("row").filter({ hasText: "movie.srt" });
+    await expect(taskRow.getByText("Completed", { exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    expect(requestBodies.join("\n")).toContain(sourceSentence);
+    expect(requestBodies.join("\n")).not.toContain("�");
+    const outputBytes = readFileSync(
+      path.join(temporaryDirectory, "movie.en.srt")
+    );
+    const output = new TextDecoder("utf-8", { fatal: true }).decode(
+      outputBytes
+    );
+    expect(output).toContain("Correct translation");
+    expect(output).not.toContain("�");
+    expect(
+      readdirSync(temporaryDirectory).filter(
+        (name) =>
+          name.includes(".translation.") || name.endsWith(".backup.json")
+      )
+    ).toEqual([]);
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("the real GUI explains an unsupported encoding before API or file writes", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-encoding-failure-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "ambiguous.srt");
+  const outputPath = path.join(temporaryDirectory, "ambiguous.en.srt");
+  writeFileSync(
+    sourcePath,
+    Buffer.from([0xff, 0xfe, 0x00, 0x00, 0x41, 0x00, 0x00, 0x00])
+  );
+  writeFileSync(outputPath, "sentinel", "utf8");
+
+  const requestBodies: string[] = [];
+  const mockServer = await startMockOpenAiServer({
+    onRequest: ({ bodyText }) => requestBodies.push(bodyText),
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    await page.evaluate(
+      ({ apiHost }) => {
+        localStorage.clear();
+        localStorage.setItem("language", JSON.stringify("zh-CN"));
+        localStorage.setItem("api_keys", JSON.stringify(["test-key"]));
+        localStorage.setItem("api_host", JSON.stringify(apiHost));
+        localStorage.setItem("model", JSON.stringify("test-model"));
+        localStorage.setItem(
+          "prompt",
+          JSON.stringify("Translate every cue to {{lang}}. {{additional}}")
+        );
+        localStorage.setItem("translate_lang", JSON.stringify("English"));
+        localStorage.setItem("delay", JSON.stringify(0));
+        localStorage.setItem("requests_per_minute", JSON.stringify(1000));
+        localStorage.setItem("translation_concurrency", JSON.stringify(1));
+        localStorage.setItem(
+          "subtitle_output_format",
+          JSON.stringify("srt-translation")
+        );
+      },
+      { apiHost: mockServer.apiHost }
+    );
+    await page.reload();
+
+    await page.locator('input[type="file"]').setInputFiles(sourcePath);
+    const taskDialog = page.getByRole("dialog");
+    await expect(taskDialog).toBeVisible();
+    await taskDialog.getByRole("button", { name: "新增任务" }).click();
+
+    const taskRow = page
+      .getByRole("row")
+      .filter({ hasText: "ambiguous.srt" });
+    await expect(taskRow.getByText("失败", { exact: true })).toBeVisible();
+    await taskRow
+      .getByRole("button", { name: "查看 ambiguous.srt 翻译详情" })
+      .click();
+    await expect(page.getByRole("heading", { name: "错误详细信息" })).toBeVisible();
+    await expect(page.locator("pre")).toContainText(
+      "无法可靠识别该字幕的文本编码。请使用记事本、Notepad++ 等工具将字幕转换为 UTF-8 编码后重试。"
+    );
+
+    expect(requestBodies).toHaveLength(0);
+    expect(readFileSync(outputPath, "utf8")).toBe("sentinel");
+    expect(
+      readdirSync(temporaryDirectory).filter(
+        (name) =>
+          name.includes(".translation.") || name.endsWith(".backup.json")
+      )
+    ).toEqual([]);
   } finally {
     await app?.close();
     await mockServer.close();
