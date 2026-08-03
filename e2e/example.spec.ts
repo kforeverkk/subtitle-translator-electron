@@ -15,6 +15,11 @@ import { setTimeout as wait } from "node:timers/promises";
 
 test.describe.configure({ mode: "serial" });
 
+const sourceAppVersion = (
+  JSON.parse(
+    readFileSync(path.resolve("package.json"), "utf8")
+  ) as { version: string }
+).version;
 const isolatedE2eUserDataDirectory = mkdtempSync(
   path.join(tmpdir(), "subtitle-translator-e2e-profile-")
 );
@@ -212,7 +217,7 @@ test("homepage has title and links to intro page", async () => {
     expect(path.resolve(runtime.userDataPath)).toBe(
       path.resolve(isolatedE2eUserDataDirectory)
     );
-    expect(runtime.version).toBe("2.1.2");
+    expect(runtime.version).toBe(sourceAppVersion);
     expect(await page.title()).toBe("Subtitle translator");
     await page.screenshot({ path: "e2e/screenshots/example.png" });
   } finally {
@@ -245,7 +250,7 @@ test("packaged Windows GUI uses the current isolated build", async ({}, testInfo
     expect(path.resolve(runtime.userDataPath)).toBe(
       path.resolve(isolatedE2eUserDataDirectory)
     );
-    expect(runtime.version).toBe("2.1.2");
+    expect(runtime.version).toBe(sourceAppVersion);
     expect(await page.title()).toBe("Subtitle translator");
 
     await page.evaluate(() => {
