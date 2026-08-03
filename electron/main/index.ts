@@ -405,17 +405,6 @@ function readMatchingCheckpoint(
     : undefined;
 }
 
-function readCompatibleLegacyCheckpoint(
-  checkpointPath: string,
-  sourceIdentity: CurrentSubtitleSourceIdentity
-): TranslationCacheDocument | undefined {
-  const checkpoint = readCheckpoint(checkpointPath);
-  if (!checkpoint) return undefined;
-  return hasMatchingCheckpointSource(checkpoint, sourceIdentity)
-    ? checkpoint
-    : undefined;
-}
-
 function findMatchingTaskCheckpoint(
   filePath: string,
   sourceName: string,
@@ -563,15 +552,23 @@ function readTranslationInput(
   let selectedCheckpoint:
     | { path: string; checkpoint: TranslationCacheDocument }
     | undefined;
-  let unverifiableV1Path: string | undefined;
+  let incompatibleLegacyPath: string | undefined;
   for (const legacyPath of getTranslationCheckpointCandidates(
     filePath,
     sourceName
   )) {
-    const checkpoint = readCompatibleLegacyCheckpoint(
-      legacyPath,
+    const candidateCheckpoint = readCheckpoint(legacyPath);
+    if (!candidateCheckpoint) continue;
+    const checkpoint = hasMatchingCheckpointSource(
+      candidateCheckpoint,
       sourceIdentity
-    );
+    )
+      ? candidateCheckpoint
+      : undefined;
+    if (!checkpoint) {
+      incompatibleLegacyPath ??= legacyPath;
+      continue;
+    }
     const resumeMetadata = checkpoint
       ? getTranslationCheckpointResumeMetadata(checkpoint, configFingerprint)
       : undefined;
@@ -580,7 +577,7 @@ function readTranslationInput(
       configFingerprint &&
       resumeMetadata?.shouldRestartTranslation
     ) {
-      unverifiableV1Path ??= legacyPath;
+      incompatibleLegacyPath ??= legacyPath;
       continue;
     }
     if (checkpoint && !resumeMetadata?.shouldRestartTranslation) {
@@ -622,20 +619,20 @@ function readTranslationInput(
     };
   }
 
-  if (unverifiableV1Path) {
+  if (incompatibleLegacyPath) {
     return {
-      // v1 cannot prove that its cues still belong to the current source. Use
-      // the current subtitle for a clean task and archive v1 only after v3 is
-      // durable, so no stale text can leak into the new translation.
+      // This legacy checkpoint cannot prove that its cues still belong to the
+      // current source. Start from the current subtitle and archive the legacy
+      // file only after the replacement v3 checkpoint is durable.
       parsed: sourceSnapshot.parsed,
       sourceName,
       sourceExtension,
       sourceFingerprint,
       checkpointPath,
-      checkpointSourcePath: unverifiableV1Path,
+      checkpointSourcePath: incompatibleLegacyPath,
       shouldPreserveCheckpointSource: true,
-      // Multiple new-language tasks may see the same shared v1 file. They may
-      // race to archive it after their own v3 commit; ENOENT is handled safely.
+      // Multiple new-language tasks may see the same shared legacy file. They
+      // may race to archive it after their own v3 commit; ENOENT is safe.
       shouldClaimCheckpointSource: false,
       shouldRestartTranslation: false,
       backupOwnerTaskIds: [taskId],
