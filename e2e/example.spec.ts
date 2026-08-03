@@ -1288,6 +1288,153 @@ test("a rejected batch IPC request marks every task as failed", async () => {
   }
 });
 
+test("SSA input keeps styles and effects in real Electron ASS output", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-ssa-success-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "styled-effects.ssa");
+  writeFileSync(
+    sourcePath,
+    readFileSync(path.resolve("tests/fixtures/ssa/styled-effects.ssa"), "utf8"),
+    "utf8"
+  );
+  const requestBodies: string[] = [];
+  const mockServer = await startMockOpenAiServer({
+    getStreamElements: () => ["Translated one", "Translated two", "Translated three"],
+    onRequest: ({ bodyText }) => requestBodies.push(bodyText),
+  });
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    const progress = await page.evaluate(
+      ({ apiHost, sourcePath }) =>
+        new Promise<{
+          status: string;
+          error?: string;
+          outputPath?: string;
+        }>((resolve, reject) => {
+          const taskId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+          const removeListener = window.electronAPI.onBatchProgress((update) => {
+            if (
+              update.taskId === taskId &&
+              (update.status === "done" || update.status === "error")
+            ) {
+              removeListener();
+              resolve(update);
+            }
+          });
+          window.electronAPI
+            .translateBatch({
+              files: [{ taskId, path: sourcePath, name: "styled-effects.ssa" }],
+              params: {
+                apiKeys: ["test-key"],
+                apiHost,
+                model: "test-model",
+                prompt: "Translate every cue to {{lang}}. {{additional}}",
+                lang: "English",
+                additional: "",
+                temperature: 1,
+                outputFormat: "ass-bilingual",
+                assFonts: { translationFont: "", originalFont: "" },
+                concurrency: 1,
+                delay: 0,
+                requestsPerMinute: 1_000,
+                contextSize: 5,
+              },
+            })
+            .catch(reject);
+        }),
+      { apiHost: mockServer.apiHost, sourcePath }
+    );
+
+    expect(progress.status, progress.error).toBe("done");
+    expect(progress.outputPath).toBeTruthy();
+    const output = readFileSync(progress.outputPath!, "utf8");
+    expect(output).toContain("[V4+ Styles]");
+    expect(output).toContain("Times New Roman,28,&H20FFFFFF");
+    expect(output).toContain("Banner;20;0;10");
+    expect(output).toContain("{\\pos(100,200)\\fad(100,200)\\i1\\1c&H112233&}Hello, world");
+    expect(output).toContain("{\\rST Translation 0}Translated one");
+    expect(output).not.toContain("Style: Default,Arial,20,");
+    expect(requestBodies).toHaveLength(2);
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("SSA conversion failure is explicit in the real GUI before API use", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-ssa-failure-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "invalid-style.ssa");
+  const invalidSource = readFileSync(
+    path.resolve("tests/fixtures/ssa/attachments.ssa"),
+    "utf8"
+  ).replace(",2,10,10,10,0,1", ",12,10,10,10,0,1");
+  writeFileSync(sourcePath, invalidSource, "utf8");
+  const requestBodies: string[] = [];
+  const mockServer = await startMockOpenAiServer({
+    onRequest: ({ bodyText }) => requestBodies.push(bodyText),
+  });
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    await page.evaluate(
+      ({ apiHost }) => {
+        localStorage.clear();
+        localStorage.setItem("language", JSON.stringify("en-US"));
+        localStorage.setItem("api_keys", JSON.stringify(["test-key"]));
+        localStorage.setItem("api_host", JSON.stringify(apiHost));
+        localStorage.setItem("model", JSON.stringify("test-model"));
+        localStorage.setItem(
+          "prompt",
+          JSON.stringify("Translate every cue to {{lang}}. {{additional}}")
+        );
+        localStorage.setItem("translate_lang", JSON.stringify("English"));
+        localStorage.setItem("delay", JSON.stringify(0));
+        localStorage.setItem("requests_per_minute", JSON.stringify(1000));
+        localStorage.setItem("translation_concurrency", JSON.stringify(1));
+        localStorage.setItem(
+          "subtitle_output_format",
+          JSON.stringify("ass-bilingual")
+        );
+      },
+      { apiHost: mockServer.apiHost }
+    );
+    await page.reload();
+
+    await page.locator('input[type="file"]').setInputFiles(sourcePath);
+    const taskDialog = page.getByRole("dialog");
+    await expect(taskDialog).toBeVisible();
+    await taskDialog.getByRole("button", { name: "Add task" }).click();
+
+    const taskRow = page.getByRole("row").filter({ hasText: "invalid-style.ssa" });
+    await expect(taskRow.getByText("Failed", { exact: true })).toBeVisible();
+    await taskRow
+      .getByRole("button", {
+        name: "View translation details for invalid-style.ssa",
+      })
+      .click();
+    await expect(page.getByRole("heading", { name: "Error details" })).toBeVisible();
+    const details = page.locator("pre");
+    await expect(details).toContainText("SSA to ASS format conversion failed");
+    await expect(details).toContainText("style Default.Alignment");
+    await expect(details).toContainText("12");
+    await expect(details).toContainText("original subtitle was not overwritten");
+    await expect(details).toContainText("choose SRT output");
+    expect(requestBodies).toHaveLength(0);
+    expect(readdirSync(temporaryDirectory).filter((name) => name.endsWith(".ass"))).toEqual([]);
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("coffee banner appears at each 20-file boundary, even with tasks visible", async () => {
   const temporaryDirectory = mkdtempSync(
     path.join(tmpdir(), "subtitle-translator-coffee-")

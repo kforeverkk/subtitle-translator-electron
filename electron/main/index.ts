@@ -11,6 +11,7 @@ import {
   type WebContents,
 } from "electron";
 import { translationErrorCodes } from "../shared/translation-error-codes";
+import { parseSsaToAssConversionError } from "../shared/ssa-to-ass-error";
 import { release } from "node:os";
 import { join } from "node:path";
 import fs, { type Stats } from "node:fs";
@@ -716,13 +717,18 @@ function getErrorDetails(error: unknown): {
     typeof errorRecord.message === "string" ? errorRecord.message : undefined,
     typeof cause.message === "string" ? cause.message : undefined,
   ].filter((message): message is string => Boolean(message));
+  const structuredConversionMessage = messages.find((message) =>
+    Boolean(parseSsaToAssConversionError(message))
+  );
   const response =
     typeof errorRecord.response === "object" && errorRecord.response !== null
       ? (errorRecord.response as Record<string, unknown>)
       : {};
 
   return {
-    message: messages.join(" | ") || "Unknown error",
+    message:
+      structuredConversionMessage ??
+      ([...new Set(messages)].join(" | ") || "Unknown error"),
     name:
       typeof errorRecord.name === "string"
         ? errorRecord.name
