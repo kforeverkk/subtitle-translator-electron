@@ -1,0 +1,20 @@
+[Script Info]
+ScriptType: v4.00
+
+[V4 Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, TertiaryColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, AlphaLevel, Encoding
+Style: Default,Arial,20,16777215,65535,0,0,0,0,1,1,1,2,10,10,10,0,1
+
+[Events]
+Format: Marked, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: Marked=0,0:00:01.00,0:00:02.00,Default,,0000,0000,0000,,Attachment test
+
+[Fonts]
+fontname: embedded.ttf
+M)_S4F1P;```````/\`!``$``0`@`0``````
+RAWPAYLOADWITHOUTCOLON
+
+[Graphics]
+filename: image.bmp
+0V%T86)I;&4@<&%Y;&]A9```````````````
+; attachment comment must survive
