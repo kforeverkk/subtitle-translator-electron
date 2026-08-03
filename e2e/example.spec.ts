@@ -54,6 +54,11 @@ function createTestTranslationConfigFingerprint(config: {
 async function startMockOpenAiServer(options: {
   streamDelayMs?: number | ((requestBodyText: string) => number);
   getStreamElements?: (requestBodyText: string) => string[];
+  onRequest?: (request: {
+    startedAt: number;
+    authorization?: string;
+    bodyText: string;
+  }) => void;
 } = {}): Promise<{
   apiHost: string;
   close: () => Promise<void>;
@@ -68,6 +73,7 @@ async function startMockOpenAiServer(options: {
       }
 
       if (request.url === "/v1/chat/completions") {
+        const startedAt = Date.now();
         const requestChunks: Buffer[] = [];
         for await (const chunk of request) {
           requestChunks.push(Buffer.from(chunk));
@@ -76,6 +82,14 @@ async function startMockOpenAiServer(options: {
           Buffer.concat(requestChunks).toString("utf8")
         ) as { stream?: boolean };
         const requestBodyText = JSON.stringify(requestBody);
+        options.onRequest?.({
+          startedAt,
+          authorization:
+            typeof request.headers.authorization === "string"
+              ? request.headers.authorization
+              : undefined,
+          bodyText: requestBodyText,
+        });
         const created = Math.floor(Date.now() / 1_000);
         if (requestBody.stream) {
           const streamDelayMs =
@@ -178,9 +192,10 @@ async function startMockOpenAiServer(options: {
   return {
     apiHost: `http://127.0.0.1:${address.port}/v1`,
     close: () =>
-      new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve()))
-      ),
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+        server.closeAllConnections();
+      }),
   };
 }
 
@@ -505,6 +520,155 @@ test("checkpoint save failures show a non-fatal recovery warning", async () => {
     ).toBeVisible();
   } finally {
     await app.close();
+  }
+});
+
+test("concurrent batches share one RPM budget for the same API account", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-shared-rpm-")
+  );
+  const englishSourcePath = path.join(temporaryDirectory, "english-source.srt");
+  const frenchSourcePath = path.join(temporaryDirectory, "french-source.srt");
+  const sourceText = "1\n00:00:00,000 --> 00:00:01,000\n你好\n";
+  writeFileSync(englishSourcePath, sourceText, "utf8");
+  writeFileSync(frenchSourcePath, sourceText, "utf8");
+  const requestStarts: number[] = [];
+  const mockServer = await startMockOpenAiServer({
+    getStreamElements: (requestBodyText) =>
+      /French/i.test(requestBodyText) ? ["Bonjour"] : ["Hello"],
+    onRequest: ({ startedAt }) => requestStarts.push(startedAt),
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    await page.evaluate(
+      async ({ apiHost, englishSourcePath, frenchSourcePath }) => {
+        const createParams = (lang: string) => ({
+          apiKeys: ["test-key"],
+          apiHost,
+          model: "test-model",
+          prompt: "Translate every cue to {{lang}}. {{additional}}",
+          lang,
+          additional: "",
+          temperature: 1,
+          outputFormat: "srt-translation" as const,
+          assFonts: { translationFont: "", originalFont: "" },
+          concurrency: 1 as const,
+          delay: 120,
+          requestsPerMinute: 1_000,
+          contextSize: 5,
+        });
+
+        const englishBatch = window.electronAPI.translateBatch({
+          files: [
+            {
+              taskId: "77777777-7777-4777-8777-777777777777",
+              path: englishSourcePath,
+              name: "english-source.srt",
+            },
+          ],
+          params: createParams("English"),
+        });
+        const frenchBatch = window.electronAPI.translateBatch({
+          files: [
+            {
+              taskId: "88888888-8888-4888-8888-888888888888",
+              path: frenchSourcePath,
+              name: "french-source.srt",
+            },
+          ],
+          params: createParams("French"),
+        });
+
+        await Promise.all([englishBatch, frenchBatch]);
+      },
+      {
+        apiHost: mockServer.apiHost,
+        englishSourcePath,
+        frenchSourcePath,
+      }
+    );
+
+    expect(requestStarts).toHaveLength(4);
+    for (let index = 1; index < requestStarts.length; index++) {
+      expect(requestStarts[index] - requestStarts[index - 1]).toBeGreaterThanOrEqual(
+        90
+      );
+    }
+    expect(
+      readFileSync(path.join(temporaryDirectory, "english-source.en.srt"), "utf8")
+    ).toContain("Hello");
+    expect(
+      readFileSync(path.join(temporaryDirectory, "french-source.fr.srt"), "utf8")
+    ).toContain("Bonjour");
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("a single zero-delay batch keeps its API count and throughput", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-single-rpm-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "single-source.srt");
+  writeFileSync(
+    sourcePath,
+    "1\n00:00:00,000 --> 00:00:01,000\n你好\n",
+    "utf8"
+  );
+  const requestStarts: number[] = [];
+  const mockServer = await startMockOpenAiServer({
+    getStreamElements: () => ["Hello"],
+    onRequest: ({ startedAt }) => requestStarts.push(startedAt),
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    await page.evaluate(
+      async ({ apiHost, sourcePath }) => {
+        await window.electronAPI.translateBatch({
+          files: [
+            {
+              taskId: "99999999-9999-4999-8999-999999999999",
+              path: sourcePath,
+              name: "single-source.srt",
+            },
+          ],
+          params: {
+            apiKeys: ["test-key"],
+            apiHost,
+            model: "test-model",
+            prompt: "Translate every cue to {{lang}}. {{additional}}",
+            lang: "English",
+            additional: "",
+            temperature: 1,
+            outputFormat: "srt-translation",
+            assFonts: { translationFont: "", originalFont: "" },
+            concurrency: 1,
+            delay: 0,
+            requestsPerMinute: 1_000,
+            contextSize: 5,
+          },
+        });
+      },
+      { apiHost: mockServer.apiHost, sourcePath }
+    );
+
+    expect(requestStarts).toHaveLength(2);
+    expect(requestStarts[1] - requestStarts[0]).toBeLessThan(500);
+    expect(
+      readFileSync(path.join(temporaryDirectory, "single-source.en.srt"), "utf8")
+    ).toContain("Hello");
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
   }
 });
 
