@@ -40,6 +40,10 @@ import {
   subtitleTimestampToMilliseconds,
   type SubtitleOutputFormat,
 } from "./subtitle-output";
+import { createSsaToAssConversionError } from "../../shared/ssa-to-ass-error";
+import {
+  convertSsaToBilingualAss,
+} from "./ssa-to-ass";
 
 export interface SubtitleCueData {
   text: string;
@@ -76,6 +80,10 @@ interface AssSection {
 export interface AssSubtitle {
   full: AssSection[];
   events: SubtitleCue[];
+  source?: {
+    format: "ssa";
+    text: string;
+  };
 }
 
 export type ParsedSubtitle = Array<SubtitleCue | SubtitleHeader> | AssSubtitle;
@@ -161,7 +169,12 @@ function isParsedSubtitle(value: unknown): value is ParsedSubtitle {
     Array.isArray(value.full) &&
     value.full.every(isRecord) &&
     Array.isArray(value.events) &&
-    value.events.every(isSubtitleCueNode)
+    value.events.every(isSubtitleCueNode) &&
+    (value.source === undefined ||
+      (isRecord(value.source) &&
+        value.source.format === "ssa" &&
+        typeof value.source.text === "string" &&
+        value.source.text.trim().length > 0))
   );
 }
 
@@ -404,7 +417,13 @@ function parseSubtitle(
           },
         };
       }) ?? [];
-    return { full: parsedAssSubtitle, events };
+    return {
+      full: parsedAssSubtitle,
+      events,
+      ...(fileExtension === "ssa"
+        ? { source: { format: "ssa" as const, text: fileContent } }
+        : {}),
+    };
   }
   throw new Error(translationErrorCodes.unsupportedFileExtension);
 }
@@ -420,7 +439,8 @@ function saveTranslated(
   outputPath: string,
   parsedSubtitle: ParsedSubtitle,
   outputFormat: SubtitleOutputFormat,
-  assFonts: AssBilingualFontOptions = {}
+  assFonts: AssBilingualFontOptions = {},
+  sourceFormat?: SubtitleFileExtension
 ): void {
   let newSubtitle = "";
   if (
@@ -454,6 +474,22 @@ function saveTranslated(
       };
     });
     newSubtitle = stringifySync(translatedNodes as NodeList, { format: "SRT" });
+  } else if (
+    sourceFormat === "ssa" ||
+    (!Array.isArray(parsedSubtitle) && parsedSubtitle.source?.format === "ssa")
+  ) {
+    if (Array.isArray(parsedSubtitle) || parsedSubtitle.source?.format !== "ssa") {
+      throw createSsaToAssConversionError({
+        reason: "missing-source",
+        location: "SSA source",
+      });
+    }
+    newSubtitle = convertSsaToBilingualAss({
+      sourceText: parsedSubtitle.source.text,
+      events: parsedSubtitle.events,
+      outputFormat,
+      fonts: assFonts,
+    });
   } else {
     const canPreserveAssStyles =
       !Array.isArray(parsedSubtitle) &&
@@ -537,6 +573,33 @@ function saveTranslated(
       fs.unlinkSync(tmpPath);
     } catch {}
   }
+}
+
+function validateSubtitleOutputCompatibility(
+  parsedSubtitle: ParsedSubtitle,
+  sourceFormat: SubtitleFileExtension,
+  outputFormat: SubtitleOutputFormat,
+  assFonts: AssBilingualFontOptions = {}
+): void {
+  if (
+    sourceFormat !== "ssa" ||
+    (outputFormat !== "ass-bilingual" &&
+      outputFormat !== "ass-original-translation")
+  ) {
+    return;
+  }
+  if (Array.isArray(parsedSubtitle) || parsedSubtitle.source?.format !== "ssa") {
+    throw createSsaToAssConversionError({
+      reason: "missing-source",
+      location: "SSA source",
+    });
+  }
+  convertSsaToBilingualAss({
+    sourceText: parsedSubtitle.source.text,
+    events: parsedSubtitle.events,
+    outputFormat,
+    fonts: assFonts,
+  });
 }
 
 async function analyzeSubtitlesForContext(
@@ -659,4 +722,5 @@ export {
   saveTranslated,
   analyzeSubtitlesForContext,
   detectSubtitleLanguage,
+  validateSubtitleOutputCompatibility,
 };

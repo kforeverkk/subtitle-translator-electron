@@ -34,6 +34,7 @@ import {
   analyzeSubtitlesForContext,
   detectSubtitleLanguage,
   getSubtitleCues,
+  validateSubtitleOutputCompatibility,
 } from "./utils/translate";
 import { createSubtitlePreview } from "./utils/subtitle-preview";
 import { normalizeAssFontName } from "./utils/ass-bilingual";
@@ -364,6 +365,28 @@ interface TranslationInput {
   shouldClaimCheckpointSource: boolean;
   shouldRestartTranslation: boolean;
   backupOwnerTaskIds: string[];
+}
+
+function attachCurrentSsaSource(
+  parsed: ParsedSubtitle,
+  filePath: string,
+  sourceExtension: SubtitleFileExtension
+): ParsedSubtitle {
+  if (
+    sourceExtension !== "ssa" ||
+    Array.isArray(parsed) ||
+    parsed.source?.format === "ssa" ||
+    path.extname(filePath).toLowerCase() !== ".ssa"
+  ) {
+    return parsed;
+  }
+  return {
+    ...parsed,
+    source: {
+      format: "ssa",
+      text: fs.readFileSync(filePath, "utf8"),
+    },
+  };
 }
 
 function readCheckpoint(
@@ -1177,11 +1200,22 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         file.taskId,
         translationConfigFingerprint
       );
-      const parsed = input.parsed;
+      const parsed = attachCurrentSsaSource(
+        input.parsed,
+        file.path,
+        input.sourceExtension
+      );
+      input.parsed = parsed;
       const subtitle = getSubtitleCues(parsed);
       if (input.shouldRestartTranslation) {
         clearSubtitleCueTranslations(subtitle);
       }
+      validateSubtitleOutputCompatibility(
+        parsed,
+        input.sourceExtension,
+        params.outputFormat,
+        params.assFonts
+      );
       const totalCues = subtitle.length;
       let completedCues = subtitle.filter(isSubtitleCueComplete).length;
 
@@ -1346,7 +1380,8 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
           translatedOutputPath,
           parsed,
           params.outputFormat,
-          params.assFonts
+          params.assFonts,
+          input.sourceExtension
         );
         await checkpointWriter.wait().catch((error: unknown) => {
           console.warn("Failed to finish translation checkpoint:", error);
@@ -1542,7 +1577,8 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
             translatedOutputPath,
             parsed,
             params.outputFormat,
-            params.assFonts
+            params.assFonts,
+            input.sourceExtension
           );
         } catch (e) {
           console.warn("Failed to write partial translated file:", e);
@@ -1580,7 +1616,8 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         translatedOutputPath,
         parsed,
         params.outputFormat,
-        params.assFonts
+        params.assFonts,
+        input.sourceExtension
       );
       await checkpointWriter.wait().catch((error: unknown) => {
         console.warn("Failed to finish translation checkpoint:", error);
