@@ -13,6 +13,7 @@ const translationErrorMessageIds: Record<string, string> = {
   [translationErrorCodes.unsupportedInputFile]: "error.unsupportedInputFile",
   [translationErrorCodes.inputPathNotFile]: "error.inputPathNotFile",
   [translationErrorCodes.unsupportedSubtitleFormat]: "error.unsupportedSubtitleFormat",
+  [translationErrorCodes.subtitleEncoding]: "error.subtitleEncoding",
   [translationErrorCodes.invalidCheckpoint]: "error.invalidCheckpoint",
   [translationErrorCodes.incompatibleCheckpoint]: "error.incompatibleCheckpoint",
   [translationErrorCodes.noValidApiKeys]: "error.noValidApiKeys",

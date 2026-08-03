@@ -118,6 +118,7 @@ export const messages = {
   "error.unsupportedInputFile": defineMessage({ id: "error.unsupportedInputFile", message: "Unsupported translation input file." }),
   "error.inputPathNotFile": defineMessage({ id: "error.inputPathNotFile", message: "The selected translation input path is not a file." }),
   "error.unsupportedSubtitleFormat": defineMessage({ id: "error.unsupportedSubtitleFormat", message: "Unsupported subtitle format." }),
+  "error.subtitleEncoding": defineMessage({ id: "error.subtitleEncoding", message: "The subtitle text encoding could not be identified reliably. Convert the subtitle to UTF-8 with Notepad, Notepad++, or another text editor, then try again." }),
   "error.invalidCheckpoint": defineMessage({ id: "error.invalidCheckpoint", message: "The translation checkpoint JSON is invalid." }),
   "error.incompatibleCheckpoint": defineMessage({ id: "error.incompatibleCheckpoint", message: "The translation checkpoint JSON is invalid or incompatible." }),
   "error.ssaToAssConversion": defineMessage({ id: "error.ssaToAssConversion", message: "SSA to ASS format conversion failed at {location}: {reason}. The original subtitle was not overwritten and the translation checkpoint is still available. Fix the source SSA format or choose SRT output." }),

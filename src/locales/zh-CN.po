@@ -1179,6 +1179,11 @@ msgid "error.unsupportedSubtitleFormat"
 msgstr "不支持的字幕格式。"
 
 #. js-lingui-explicit-id
+#: src/i18n-messages.ts:121
+msgid "error.subtitleEncoding"
+msgstr "无法可靠识别该字幕的文本编码。请使用记事本、Notepad++ 等工具将字幕转换为 UTF-8 编码后重试。"
+
+#. js-lingui-explicit-id
 #: src/i18n-messages.ts:118
 msgid "error.unsupportedInputFile"
 msgstr "不支持的翻译输入文件。"

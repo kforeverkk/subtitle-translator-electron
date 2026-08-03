@@ -1179,6 +1179,11 @@ msgid "error.unsupportedSubtitleFormat"
 msgstr "Unsupported subtitle format."
 
 #. js-lingui-explicit-id
+#: src/i18n-messages.ts:121
+msgid "error.subtitleEncoding"
+msgstr "The subtitle text encoding could not be identified reliably. Convert the subtitle to UTF-8 with Notepad, Notepad++, or another text editor, then try again."
+
+#. js-lingui-explicit-id
 #: src/i18n-messages.ts:118
 msgid "error.unsupportedInputFile"
 msgstr "Unsupported translation input file."

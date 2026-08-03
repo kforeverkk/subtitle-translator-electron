@@ -9,6 +9,8 @@ import { getLocalizedTranslationError } from "../src/utils/translation-error.ts"
 
 const messages: Record<string, string> = {
   "error.invalidCheckpoint": "检查点无效。",
+  "error.subtitleEncoding":
+    "无法可靠识别该字幕的文本编码。请使用记事本、Notepad++ 等工具将字幕转换为 UTF-8 编码后重试。",
   "error.ssaToAssConversion":
     "SSA 转 ASS 格式转换失败（{location}）：{reason}。原字幕未覆盖，翻译进度仍保留。请修正源 SSA 格式，或改用 SRT 输出。",
   "error.ssaToAssConversion.invalidField": "字段值“{value}”无法安全转换",
@@ -57,6 +59,17 @@ test("keeps exact localization for existing translation error codes", () => {
       t
     ),
     "检查点无效。"
+  );
+});
+
+test("explains how to recover from an unrecognized subtitle encoding", () => {
+  assert.equal(
+    getLocalizedTranslationError(
+      new Error(translationErrorCodes.subtitleEncoding),
+      "fallback",
+      t
+    ),
+    "无法可靠识别该字幕的文本编码。请使用记事本、Notepad++ 等工具将字幕转换为 UTF-8 编码后重试。"
   );
 });
 
