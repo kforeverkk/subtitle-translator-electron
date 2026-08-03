@@ -6,6 +6,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
@@ -13,6 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import iconv from "iconv-lite";
+import assParser from "ass-parser";
 
 test.describe.configure({ mode: "serial" });
 
@@ -55,6 +57,53 @@ function createTestTranslationConfigFingerprint(config: {
       ])
     )
     .digest("hex");
+}
+
+function createAssSource(fontName: string, text: string): string {
+  return `[Script Info]
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,${fontName},20,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0000,0000,0000,,${text}
+`;
+}
+
+function createAssCheckpointSubtitle(
+  source: string,
+  translatedText: string
+): {
+  full: Array<Record<string, unknown>>;
+  events: Array<Record<string, unknown>>;
+} {
+  const full = assParser(source) as Array<{
+    section?: string;
+    body?: Array<{ key?: string; value?: unknown }>;
+  }>;
+  const dialogue = full
+    .find((section) => section.section === "Events")
+    ?.body?.find((entry) => entry.key === "Dialogue")?.value as
+    | Record<string, string>
+    | undefined;
+  if (!dialogue) throw new Error("ASS fixture has no dialogue");
+  return {
+    full: full as Array<Record<string, unknown>>,
+    events: [
+      {
+        type: "cue",
+        data: {
+          text: dialogue.Text,
+          start: dialogue.Start,
+          end: dialogue.End,
+          translatedText,
+        },
+      },
+    ],
+  };
 }
 
 async function startMockOpenAiServer(options: {
@@ -1429,6 +1478,306 @@ test("SSA conversion failure is explicit in the real GUI before API use", async 
     await expect(details).toContainText("choose SRT output");
     expect(requestBodies).toHaveLength(0);
     expect(readdirSync(temporaryDirectory).filter((name) => name.endsWith(".ass"))).toEqual([]);
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("subtitle source identity resumes equivalent legacy-encoded content", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-source-identity-encoding-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "movie.srt");
+  const taskId = "77777777-7777-4777-8777-777777777777";
+  const checkpointPath = path.join(
+    temporaryDirectory,
+    `movie.translation.${taskId.replaceAll("-", "")}.json`
+  );
+  const sentence = "简体中文字幕身份校验测试，这是一段足够长的原始字幕文本。";
+  const sourceText = Array.from({ length: 20 }, () => sentence).join(" ");
+  writeFileSync(
+    sourcePath,
+    iconv.encode(`1\n00:00:00,000 --> 00:00:02,000\n${sourceText}\n`, "gb18030")
+  );
+  const sourceInfo = statSync(sourcePath);
+  const prompt = "Translate every cue to {{lang}}. {{additional}}";
+  const requestBodies: string[] = [];
+  const mockServer = await startMockOpenAiServer({
+    onRequest: ({ bodyText }) => requestBodies.push(bodyText),
+  });
+  const configFingerprint = createTestTranslationConfigFingerprint({
+    apiHost: mockServer.apiHost,
+    model: "test-model",
+    prompt,
+    lang: "English",
+    additional: "",
+    temperature: 1,
+    contextSize: 5,
+  });
+  writeFileSync(
+    checkpointPath,
+    JSON.stringify({
+      version: 3,
+      format: "srt",
+      source: {
+        name: "movie.srt",
+        fingerprint: { size: sourceInfo.size, mtimeMs: sourceInfo.mtimeMs },
+      },
+      translation: { configFingerprint },
+      task: { id: taskId },
+      subtitle: [
+        {
+          type: "cue",
+          data: {
+            start: 0,
+            end: 2_000,
+            text: sourceText,
+            translatedText: "Preserved translation",
+          },
+        },
+      ],
+    }),
+    "utf8"
+  );
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    await page.evaluate(
+      async ({ sourcePath, taskId, apiHost, prompt }) => {
+        await window.electronAPI.translateBatch({
+          files: [{ taskId, path: sourcePath, name: "movie.srt" }],
+          params: {
+            apiKeys: ["test-key"],
+            apiHost,
+            model: "test-model",
+            prompt,
+            lang: "English",
+            additional: "",
+            temperature: 1,
+            outputFormat: "srt-translation",
+            assFonts: { translationFont: "", originalFont: "" },
+            concurrency: 1,
+            delay: 0,
+            requestsPerMinute: 1_000,
+            contextSize: 5,
+          },
+        });
+      },
+      { sourcePath, taskId, apiHost: mockServer.apiHost, prompt }
+    );
+
+    expect(
+      requestBodies.filter((body) => JSON.parse(body).stream === true)
+    ).toHaveLength(0);
+    expect(
+      readFileSync(path.join(temporaryDirectory, "movie.en.srt"), "utf8")
+    ).toContain("Preserved translation");
+    expect(readdirSync(temporaryDirectory).some((entry) => entry.includes("translation."))).toBe(false);
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("subtitle source identity rejects same-metadata content replacement", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-source-identity-replaced-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "movie.srt");
+  const taskId = "88888888-8888-4888-8888-888888888888";
+  const checkpointPath = path.join(
+    temporaryDirectory,
+    `movie.translation.${taskId.replaceAll("-", "")}.json`
+  );
+  const currentSource =
+    "1\n00:00:00,000 --> 00:00:01,000\nCurrent A\n\n" +
+    "2\n00:00:01,000 --> 00:00:02,000\nCurrent B\n";
+  writeFileSync(sourcePath, currentSource, "utf8");
+  const fixedTime = new Date("2026-01-02T03:04:05.000Z");
+  utimesSync(sourcePath, fixedTime, fixedTime);
+  const sourceInfo = statSync(sourcePath);
+  const prompt = "Translate every cue to {{lang}}. {{additional}}";
+  const streamBodies: string[] = [];
+  const mockServer = await startMockOpenAiServer({
+    onRequest: ({ bodyText }) => {
+      if (JSON.parse(bodyText).stream === true) streamBodies.push(bodyText);
+    },
+    getStreamElements: (bodyText) => {
+      const count = Number(
+        bodyText.match(/exactly (\d+) translated strings/i)?.[1] ?? 1
+      );
+      return Array.from({ length: count }, (_, index) => `Fresh ${index + 1}`);
+    },
+  });
+  const configFingerprint = createTestTranslationConfigFingerprint({
+    apiHost: mockServer.apiHost,
+    model: "test-model",
+    prompt,
+    lang: "English",
+    additional: "",
+    temperature: 1,
+    contextSize: 5,
+  });
+  writeFileSync(
+    checkpointPath,
+    JSON.stringify({
+      version: 3,
+      format: "srt",
+      source: {
+        name: "movie.srt",
+        fingerprint: { size: sourceInfo.size, mtimeMs: sourceInfo.mtimeMs },
+      },
+      translation: { configFingerprint },
+      task: { id: taskId },
+      subtitle: [
+        {
+          type: "cue",
+          data: {
+            start: 0,
+            end: 1_000,
+            text: "Former A",
+            translatedText: "Stale A",
+          },
+        },
+        {
+          type: "cue",
+          data: {
+            start: 1_000,
+            end: 2_000,
+            text: "Former B",
+            translatedText: "Stale B",
+          },
+        },
+      ],
+    }),
+    "utf8"
+  );
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    await page.evaluate(
+      async ({ sourcePath, taskId, apiHost, prompt }) => {
+        await window.electronAPI.translateBatch({
+          files: [{ taskId, path: sourcePath, name: "movie.srt" }],
+          params: {
+            apiKeys: ["test-key"], apiHost, model: "test-model", prompt,
+            lang: "English", additional: "", temperature: 1,
+            outputFormat: "srt-translation",
+            assFonts: { translationFont: "", originalFont: "" },
+            concurrency: 1, delay: 0, requestsPerMinute: 1_000, contextSize: 5,
+          },
+        });
+      },
+      { sourcePath, taskId, apiHost: mockServer.apiHost, prompt }
+    );
+
+    expect(streamBodies).toHaveLength(1);
+    expect(streamBodies[0]).toContain("Current A");
+    expect(streamBodies[0]).toContain("Current B");
+    expect(streamBodies[0]).not.toContain("Former A");
+    const output = readFileSync(
+      path.join(temporaryDirectory, "movie.en.srt"),
+      "utf8"
+    );
+    expect(output).toContain("Fresh 1");
+    expect(output).toContain("Fresh 2");
+    expect(output).not.toContain("Stale A");
+    expect(readdirSync(temporaryDirectory).some((entry) => entry.includes("translation."))).toBe(false);
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("subtitle source identity rejects an ASS style replacement", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-source-identity-ass-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "movie.ass");
+  const taskId = "99999999-9999-4999-8999-999999999999";
+  const checkpointPath = path.join(
+    temporaryDirectory,
+    `movie.translation.${taskId.replaceAll("-", "")}.json`
+  );
+  const currentSource = createAssSource("Noto Sans", "Hello from ASS");
+  const previousSource = createAssSource("Arial", "Hello from ASS");
+  writeFileSync(sourcePath, currentSource, "utf8");
+  const sourceInfo = statSync(sourcePath);
+  const prompt = "Translate every cue to {{lang}}. {{additional}}";
+  const streamBodies: string[] = [];
+  const mockServer = await startMockOpenAiServer({
+    onRequest: ({ bodyText }) => {
+      if (JSON.parse(bodyText).stream === true) streamBodies.push(bodyText);
+    },
+    getStreamElements: () => ["Fresh ASS translation"],
+  });
+  writeFileSync(
+    checkpointPath,
+    JSON.stringify({
+      version: 3,
+      format: "ass",
+      source: {
+        name: "movie.ass",
+        fingerprint: { size: sourceInfo.size, mtimeMs: sourceInfo.mtimeMs },
+      },
+      translation: {
+        configFingerprint: createTestTranslationConfigFingerprint({
+          apiHost: mockServer.apiHost,
+          model: "test-model",
+          prompt,
+          lang: "English",
+          additional: "",
+          temperature: 1,
+          contextSize: 5,
+        }),
+      },
+      task: { id: taskId },
+      subtitle: createAssCheckpointSubtitle(previousSource, "Stale ASS translation"),
+    }),
+    "utf8"
+  );
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    await page.evaluate(
+      async ({ sourcePath, taskId, apiHost, prompt }) => {
+        await window.electronAPI.translateBatch({
+          files: [{ taskId, path: sourcePath, name: "movie.ass" }],
+          params: {
+            apiKeys: ["test-key"], apiHost, model: "test-model", prompt,
+            lang: "English", additional: "", temperature: 1,
+            outputFormat: "ass-bilingual",
+            assFonts: { translationFont: "", originalFont: "" },
+            concurrency: 1, delay: 0, requestsPerMinute: 1_000, contextSize: 5,
+          },
+        });
+      },
+      { sourcePath, taskId, apiHost: mockServer.apiHost, prompt }
+    );
+
+    expect(streamBodies).toHaveLength(1);
+    expect(streamBodies[0]).toContain("Hello from ASS");
+    const outputName = readdirSync(temporaryDirectory).find(
+      (entry) => entry !== "movie.ass" && entry.endsWith(".ass")
+    );
+    expect(outputName).toBeTruthy();
+    const output = readFileSync(
+      path.join(temporaryDirectory, outputName!),
+      "utf8"
+    );
+    expect(output).toContain("Fresh ASS translation");
+    expect(output).not.toContain("Stale ASS translation");
+    expect(readdirSync(temporaryDirectory).some((entry) => entry.includes("translation."))).toBe(false);
   } finally {
     await app?.close();
     await mockServer.close();
