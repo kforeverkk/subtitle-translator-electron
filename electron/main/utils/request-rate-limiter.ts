@@ -135,11 +135,14 @@ export class RequestRateLimiter {
           (requestTime) => now - requestTime < REQUEST_WINDOW_MS
         );
 
-        const oldestRequestAt = this.requestTimes[0];
+        const quotaRequestAt =
+          this.requestTimes[
+            this.requestTimes.length - this.policy.requestsPerMinute
+          ];
         const windowWaitMs =
           this.requestTimes.length >= this.policy.requestsPerMinute &&
-          oldestRequestAt !== undefined
-            ? oldestRequestAt + REQUEST_WINDOW_MS - now
+          quotaRequestAt !== undefined
+            ? quotaRequestAt + REQUEST_WINDOW_MS - now
             : 0;
         const intervalWaitMs =
           this.lastRequestAt > 0

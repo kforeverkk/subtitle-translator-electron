@@ -592,10 +592,13 @@ test("concurrent batches share one RPM budget for the same API account", async (
     );
 
     expect(requestStarts).toHaveLength(4);
-    for (let index = 1; index < requestStarts.length; index++) {
-      expect(requestStarts[index] - requestStarts[index - 1]).toBeGreaterThanOrEqual(
-        90
-      );
+    const sortedRequestStarts = [...requestStarts].sort(
+      (left, right) => left - right
+    );
+    for (let index = 1; index < sortedRequestStarts.length; index++) {
+      expect(
+        sortedRequestStarts[index] - sortedRequestStarts[index - 1]
+      ).toBeGreaterThanOrEqual(90);
     }
     expect(
       readFileSync(path.join(temporaryDirectory, "english-source.en.srt"), "utf8")
@@ -661,7 +664,10 @@ test("a single zero-delay batch keeps its API count and throughput", async () =>
     );
 
     expect(requestStarts).toHaveLength(2);
-    expect(requestStarts[1] - requestStarts[0]).toBeLessThan(500);
+    const sortedRequestStarts = [...requestStarts].sort(
+      (left, right) => left - right
+    );
+    expect(sortedRequestStarts[1] - sortedRequestStarts[0]).toBeLessThan(500);
     expect(
       readFileSync(path.join(temporaryDirectory, "single-source.en.srt"), "utf8")
     ).toContain("Hello");

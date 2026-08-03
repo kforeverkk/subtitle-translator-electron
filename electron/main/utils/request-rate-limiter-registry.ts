@@ -41,7 +41,13 @@ export class RequestRateLimiterRegistry {
 
     const leaseId = Symbol();
     entry.leases.set(leaseId, policy);
-    this.applyStrictestPolicy(entry);
+    try {
+      this.applyStrictestPolicy(entry);
+    } catch (error: unknown) {
+      entry.leases.delete(leaseId);
+      if (entry.leases.size === 0) this.accounts.delete(identity);
+      throw error;
+    }
 
     let released = false;
     return {

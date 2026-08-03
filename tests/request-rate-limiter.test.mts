@@ -110,6 +110,30 @@ test("a stricter interval is recalculated by the sleeping queue head", async () 
   await assert.rejects(waiting, { name: "AbortError" });
 });
 
+test("lowering RPM waits directly for enough rolling-window history to expire", async () => {
+  const clock = createControlledRuntime();
+  const limiter = new RequestRateLimiter(
+    { requestsPerMinute: 3, minimumIntervalMs: 0 },
+    clock.runtime
+  );
+
+  await limiter.waitForSlot();
+  clock.setNow(1_001);
+  await limiter.waitForSlot();
+  clock.setNow(2_001);
+  await limiter.waitForSlot();
+  limiter.updatePolicy({ requestsPerMinute: 1, minimumIntervalMs: 0 });
+
+  clock.setNow(2_501);
+  const controller = new AbortController();
+  const waiting = limiter.waitForSlot(controller.signal);
+  await waitForQueueTurn();
+  assert.equal(clock.waits[0], 59_500);
+
+  controller.abort();
+  await assert.rejects(waiting, { name: "AbortError" });
+});
+
 test("cancels a request waiting behind another limiter turn", async () => {
   const limiter = new RequestRateLimiter({
     requestsPerMinute: 60,

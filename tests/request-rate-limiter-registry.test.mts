@@ -70,3 +70,39 @@ test("different API keys and hosts use independent limiters", () => {
   keyTwo.release();
   hostTwo.release();
 });
+
+test("a rejected lease does not poison later work for the account", () => {
+  const registry = new RequestRateLimiterRegistry();
+  const first = registry.acquire({
+    apiHost: "https://api.example.com/v1",
+    apiKey: "key-one",
+    requestsPerMinute: 60,
+    minimumIntervalMs: 0,
+  });
+
+  assert.throws(
+    () =>
+      registry.acquire({
+        apiHost: "https://api.example.com/v1",
+        apiKey: "key-one",
+        requestsPerMinute: 0,
+        minimumIntervalMs: 0,
+      }),
+    /positive integer/
+  );
+
+  const second = registry.acquire({
+    apiHost: "https://api.example.com/v1",
+    apiKey: "key-one",
+    requestsPerMinute: 30,
+    minimumIntervalMs: 0,
+  });
+  assert.equal(second.limiter, first.limiter);
+  assert.deepEqual(second.limiter.getPolicy(), {
+    requestsPerMinute: 30,
+    minimumIntervalMs: 0,
+  });
+
+  second.release();
+  first.release();
+});
