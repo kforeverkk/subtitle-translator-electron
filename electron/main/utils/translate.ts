@@ -126,7 +126,8 @@ function isSubtitleFileExtension(value: unknown): value is SubtitleFileExtension
 function isSourceFingerprint(
   value: unknown
 ): value is TranslationSourceFingerprint {
-  return (
+  if (
+    !(
     isRecord(value) &&
     typeof value.size === "number" &&
     Number.isSafeInteger(value.size) &&
@@ -134,6 +135,27 @@ function isSourceFingerprint(
     typeof value.mtimeMs === "number" &&
     Number.isFinite(value.mtimeMs) &&
     value.mtimeMs >= 0
+    )
+  ) {
+    return false;
+  }
+
+  const hashFields = [
+    value.rawHash,
+    value.contentHash,
+    value.contentHashVersion,
+  ];
+  const hasAnyHashField = hashFields.some((field) => field !== undefined);
+  if (!hasAnyHashField) return true;
+
+  return (
+    typeof value.rawHash === "string" &&
+    /^[a-f\d]{64}$/i.test(value.rawHash) &&
+    typeof value.contentHash === "string" &&
+    /^[a-f\d]{64}$/i.test(value.contentHash) &&
+    typeof value.contentHashVersion === "number" &&
+    Number.isSafeInteger(value.contentHashVersion) &&
+    value.contentHashVersion >= 1
   );
 }
 

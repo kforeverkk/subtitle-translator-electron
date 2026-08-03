@@ -8,6 +8,7 @@ import {
   SUBTITLE_CONTENT_HASH_VERSION,
   createSubtitleContentHash,
   createSubtitleSourceFingerprint,
+  hasMatchingCheckpointSource,
 } from "../electron/main/utils/subtitle-source-identity.ts";
 
 const srt = (overrides: Record<string, unknown> = {}): ParsedSubtitle => [
@@ -134,4 +135,124 @@ test("keeps raw byte identity separate from normalized subtitle identity", () =>
   assert.equal(utf8.contentHashVersion, SUBTITLE_CONTENT_HASH_VERSION);
   assert.notEqual(utf8.rawHash, utf8Bom.rawHash);
   assert.equal(utf8.contentHash, utf8Bom.contentHash);
+});
+
+test("matches modern checkpoints by raw or normalized content, never file metadata alone", () => {
+  const parsed = srt();
+  const current = createSubtitleSourceFingerprint(
+    Buffer.from("current bytes"),
+    parsed,
+    "srt",
+    { size: 13, mtimeMs: 100 }
+  );
+  const baseCheckpoint = {
+    format: "srt" as const,
+    source: { name: "movie.srt", fingerprint: current },
+    subtitle: parsed,
+  };
+  const identity = {
+    sourceName: "movie.srt",
+    format: "srt" as const,
+    fingerprint: current,
+  };
+
+  assert.equal(hasMatchingCheckpointSource(baseCheckpoint, identity), true);
+  assert.equal(
+    hasMatchingCheckpointSource(
+      {
+        ...baseCheckpoint,
+        source: {
+          ...baseCheckpoint.source,
+          fingerprint: { ...current, rawHash: "a".repeat(64) },
+        },
+      },
+      identity
+    ),
+    true
+  );
+  assert.equal(
+    hasMatchingCheckpointSource(
+      {
+        ...baseCheckpoint,
+        source: {
+          ...baseCheckpoint.source,
+          fingerprint: {
+            ...current,
+            rawHash: "a".repeat(64),
+            contentHash: "b".repeat(64),
+          },
+        },
+        subtitle: srt({ text: "different content" }),
+      },
+      identity
+    ),
+    false
+  );
+  assert.equal(
+    hasMatchingCheckpointSource(baseCheckpoint, {
+      ...identity,
+      sourceName: "renamed.srt",
+    }),
+    false
+  );
+});
+
+test("verifies legacy and unknown-version checkpoints from their subtitle snapshot", () => {
+  const parsed = srt();
+  const current = createSubtitleSourceFingerprint(
+    Buffer.from("current bytes"),
+    parsed,
+    "srt",
+    { size: 13, mtimeMs: 100 }
+  );
+  const identity = {
+    sourceName: "movie.srt",
+    format: "srt" as const,
+    fingerprint: current,
+  };
+
+  assert.equal(
+    hasMatchingCheckpointSource(
+      {
+        format: "srt",
+        source: {
+          name: "movie.srt",
+          fingerprint: { size: 13, mtimeMs: 100 },
+        },
+        subtitle: srt({ translatedText: "旧译文" }),
+      },
+      identity
+    ),
+    true
+  );
+  assert.equal(
+    hasMatchingCheckpointSource(
+      {
+        format: "srt",
+        source: {
+          name: "movie.srt",
+          fingerprint: {
+            ...current,
+            contentHashVersion: 99,
+            rawHash: "a".repeat(64),
+            contentHash: "b".repeat(64),
+          },
+        },
+        subtitle: srt({ translatedText: "旧译文" }),
+      },
+      identity
+    ),
+    true
+  );
+  assert.equal(
+    hasMatchingCheckpointSource(
+      {
+        format: "srt",
+        source: { name: "movie.srt" },
+        subtitle: srt({ text: "another source" }),
+      },
+      identity
+    ),
+    false
+  );
 });

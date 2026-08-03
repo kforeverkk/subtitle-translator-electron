@@ -28,6 +28,7 @@ import {
   writeTranslationCheckpointAtomically,
 } from "../electron/main/utils/translation-checkpoint.ts";
 import { clearSubtitleCueTranslations } from "../electron/main/utils/subtitle-chunks.ts";
+import { parseTranslationCache } from "../electron/main/utils/translate.ts";
 
 const fingerprint = { size: 1_024, mtimeMs: 123_456.75 };
 const taskId = "11111111-1111-4111-8111-111111111111";
@@ -91,6 +92,49 @@ test("does not auto-resume legacy checkpoints without a fingerprint", () => {
     ),
     false
   );
+});
+
+test("accepts complete source hashes and rejects partial or malformed hash metadata", () => {
+  const validDocument = {
+    version: 3,
+    format: "srt",
+    source: {
+      name: "episode.srt",
+      fingerprint: {
+        ...fingerprint,
+        rawHash: "a".repeat(64),
+        contentHash: "b".repeat(64),
+        contentHashVersion: 1,
+      },
+    },
+    translation: { configFingerprint: "c".repeat(64) },
+    task: { id: taskId },
+    subtitle: [
+      {
+        type: "cue",
+        data: { start: 0, end: 1_000, text: "Hello" },
+      },
+    ],
+  };
+
+  assert.deepEqual(
+    parseTranslationCache(JSON.stringify(validDocument)),
+    validDocument
+  );
+  for (const fingerprintOverride of [
+    { ...validDocument.source.fingerprint, contentHash: undefined },
+    { ...validDocument.source.fingerprint, rawHash: "not-a-hash" },
+    { ...validDocument.source.fingerprint, contentHashVersion: 0 },
+  ]) {
+    assert.throws(() =>
+      parseTranslationCache(
+        JSON.stringify({
+          ...validDocument,
+          source: { ...validDocument.source, fingerprint: fingerprintOverride },
+        })
+      )
+    );
+  }
 });
 
 test("identifies whether the translation configuration matches", () => {

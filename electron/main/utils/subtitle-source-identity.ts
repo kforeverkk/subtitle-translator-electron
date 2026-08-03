@@ -3,6 +3,10 @@ import type {
   ParsedSubtitle,
   SubtitleFileExtension,
 } from "./translate";
+import {
+  isCompleteTranslationSourceFingerprint,
+  type TranslationSourceFingerprint,
+} from "./translation-checkpoint";
 
 export const SUBTITLE_CONTENT_HASH_VERSION = 1;
 
@@ -87,4 +91,56 @@ export function createSubtitleSourceFingerprint(
     contentHash: createSubtitleContentHash(parsed, format),
     contentHashVersion: SUBTITLE_CONTENT_HASH_VERSION,
   };
+}
+
+export interface SubtitleSourceIdentityCheckpoint {
+  format: SubtitleFileExtension;
+  source: {
+    name: string;
+    fingerprint?: TranslationSourceFingerprint;
+  };
+  subtitle: ParsedSubtitle;
+}
+
+export interface CurrentSubtitleSourceIdentity {
+  sourceName: string;
+  format: SubtitleFileExtension;
+  fingerprint: TranslationSourceFingerprint;
+}
+
+export function hasMatchingCheckpointSource(
+  checkpoint: SubtitleSourceIdentityCheckpoint,
+  current: CurrentSubtitleSourceIdentity
+): boolean {
+  if (
+    checkpoint.source.name !== current.sourceName ||
+    checkpoint.format !== current.format ||
+    !isCompleteTranslationSourceFingerprint(current.fingerprint)
+  ) {
+    return false;
+  }
+
+  const checkpointFingerprint = checkpoint.source.fingerprint;
+  if (isCompleteTranslationSourceFingerprint(checkpointFingerprint)) {
+    if (checkpointFingerprint.rawHash === current.fingerprint.rawHash) {
+      return true;
+    }
+    if (
+      checkpointFingerprint.contentHashVersion ===
+      current.fingerprint.contentHashVersion
+    ) {
+      return (
+        checkpointFingerprint.contentHash === current.fingerprint.contentHash
+      );
+    }
+  }
+
+  try {
+    return (
+      createSubtitleContentHash(checkpoint.subtitle, checkpoint.format) ===
+      current.fingerprint.contentHash
+    );
+  } catch {
+    return false;
+  }
 }

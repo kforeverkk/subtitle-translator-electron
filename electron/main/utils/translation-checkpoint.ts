@@ -153,6 +153,29 @@ export function createCheckpointWriter<T>(
 export interface TranslationSourceFingerprint {
   size: number;
   mtimeMs: number;
+  rawHash?: string;
+  contentHash?: string;
+  contentHashVersion?: number;
+}
+
+const sha256Pattern = /^[a-f\d]{64}$/i;
+
+export function isCompleteTranslationSourceFingerprint(
+  value: TranslationSourceFingerprint | undefined
+): value is TranslationSourceFingerprint & {
+  rawHash: string;
+  contentHash: string;
+  contentHashVersion: number;
+} {
+  return Boolean(
+    value &&
+      typeof value.rawHash === "string" &&
+      sha256Pattern.test(value.rawHash) &&
+      typeof value.contentHash === "string" &&
+      sha256Pattern.test(value.contentHash) &&
+      Number.isSafeInteger(value.contentHashVersion) &&
+      (value.contentHashVersion ?? 0) >= 1
+  );
 }
 
 export interface TranslationConfigIdentityInput {
