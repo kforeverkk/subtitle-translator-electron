@@ -29,6 +29,7 @@ import {
 import {
   createTranslationCacheDocument,
   parseSubtitle,
+  parseSubtitleFile,
   parseTranslationCache,
   translateSubtitleChunk,
   saveTranslated,
@@ -37,6 +38,7 @@ import {
   getSubtitleCues,
   validateSubtitleOutputCompatibility,
 } from "./utils/translate";
+import { readSubtitleFile } from "./utils/subtitle-encoding";
 import { createSubtitlePreview } from "./utils/subtitle-preview";
 import { normalizeAssFontName } from "./utils/ass-bilingual";
 import { subtitleOutputFormats } from "./utils/subtitle-output";
@@ -385,7 +387,7 @@ function attachCurrentSsaSource(
     ...parsed,
     source: {
       format: "ssa",
-      text: fs.readFileSync(filePath, "utf8"),
+      text: readSubtitleFile(filePath).text,
     },
   };
 }
@@ -587,7 +589,7 @@ function readTranslationInput(
 
   if (exactCheckpointExists) {
     return {
-      parsed: parseSubtitle(fs.readFileSync(filePath, "utf8"), extension),
+      parsed: parseSubtitleFile(filePath, sourceExtension),
       sourceName,
       sourceExtension,
       sourceFingerprint,
@@ -670,7 +672,7 @@ function readTranslationInput(
       // v1 cannot prove that its cues still belong to the current source. Use
       // the current subtitle for a clean task and archive v1 only after v3 is
       // durable, so no stale text can leak into the new translation.
-      parsed: parseSubtitle(fs.readFileSync(filePath, "utf8"), extension),
+      parsed: parseSubtitleFile(filePath, sourceExtension),
       sourceName,
       sourceExtension,
       sourceFingerprint,
@@ -686,7 +688,7 @@ function readTranslationInput(
   }
 
   return {
-    parsed: parseSubtitle(fs.readFileSync(filePath, "utf8"), extension),
+    parsed: parseSubtitleFile(filePath, sourceExtension),
     sourceName,
     sourceExtension,
     sourceFingerprint,

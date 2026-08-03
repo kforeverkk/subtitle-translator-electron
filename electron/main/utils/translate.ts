@@ -41,6 +41,7 @@ import {
   type SubtitleOutputFormat,
 } from "./subtitle-output";
 import { createSsaToAssConversionError } from "../../shared/ssa-to-ass-error";
+import { readSubtitleFile } from "./subtitle-encoding";
 import {
   convertSsaToBilingualAss,
 } from "./ssa-to-ass";
@@ -428,6 +429,13 @@ function parseSubtitle(
   throw new Error(translationErrorCodes.unsupportedFileExtension);
 }
 
+function parseSubtitleFile(
+  filePath: string,
+  fileExtension: SubtitleFileExtension
+): ParsedSubtitle {
+  return parseSubtitle(readSubtitleFile(filePath).text, fileExtension);
+}
+
 function createAssSubtitleFromCues(events: SubtitleCue[]): AssSubtitle {
   return {
     events,
@@ -719,6 +727,7 @@ The value must be the language's common English name. Do not infer the language 
 export {
   translateSubtitleChunk,
   parseSubtitle,
+  parseSubtitleFile,
   saveTranslated,
   analyzeSubtitlesForContext,
   detectSubtitleLanguage,
