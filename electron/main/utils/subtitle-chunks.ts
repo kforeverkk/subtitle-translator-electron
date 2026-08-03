@@ -9,13 +9,22 @@ const MIN_REPETITION_COUNT = 16;
 const MAX_REPETITION_PATTERN_LENGTH = 3;
 const MAX_REPETITION_PREVIEW_COUNT = 3;
 
+export function hasSubtitleTranslationText(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+export function clearSubtitleCueTranslations(
+  cues: readonly TranslatableSubtitleCue[]
+): void {
+  for (const cue of cues) delete cue.data.translatedText;
+}
+
 export function isSubtitleCueComplete(
   cue: TranslatableSubtitleCue
 ): boolean {
   return (
     cue.data.text.trim().length === 0 ||
-    (typeof cue.data.translatedText === "string" &&
-      cue.data.translatedText.trim().length > 0)
+    hasSubtitleTranslationText(cue.data.translatedText)
   );
 }
 

@@ -10,6 +10,7 @@ import {
   millisecondsToAssTimestamp,
   subtitleTimestampToMilliseconds,
 } from "../electron/main/utils/subtitle-output.ts";
+import { clearSubtitleCueTranslations } from "../electron/main/utils/subtitle-chunks.ts";
 
 test("maps the selected output format to its file extension", () => {
   assert.equal(getSubtitleOutputExtension("srt-translation"), "srt");
@@ -75,6 +76,73 @@ test("formats translated-only and bilingual SRT text", () => {
       outputFormat: "srt-original-translation",
     }),
     "Original\n譯文"
+  );
+});
+
+test("renders pending SRT cues as a single original line", () => {
+  assert.equal(
+    formatSrtOutputText({
+      originalText: "Pending original",
+      outputFormat: "srt-translation",
+    }),
+    "Pending original"
+  );
+  assert.equal(
+    formatSrtOutputText({
+      originalText: "Pending original",
+      outputFormat: "srt-bilingual",
+    }),
+    "Pending original"
+  );
+  assert.equal(
+    formatSrtOutputText({
+      originalText: "Pending original",
+      translatedText: "   ",
+      outputFormat: "srt-original-translation",
+    }),
+    "Pending original"
+  );
+});
+
+test("treats a non-empty translation identical to the original as complete", () => {
+  assert.equal(
+    formatSrtOutputText({
+      originalText: "OK",
+      translatedText: "OK",
+      outputFormat: "srt-bilingual",
+    }),
+    "OK\nOK"
+  );
+});
+
+test("renders only the original after a content-configuration restart", () => {
+  const cues = [
+    {
+      data: {
+        text: "原文",
+        translatedText: "Previous English translation",
+      },
+    },
+  ];
+
+  clearSubtitleCueTranslations(cues);
+  assert.equal(
+    formatSrtOutputText({
+      originalText: cues[0].data.text,
+      translatedText: cues[0].data.translatedText,
+      outputFormat: "srt-bilingual",
+    }),
+    "原文"
+  );
+
+  cues[0].data.translatedText = "最新日语译文";
+  assert.equal(
+    formatSrtOutputText({
+      originalText: cues[0].data.text,
+      translatedText: cues[0].data.translatedText,
+      outputFormat: "srt-bilingual",
+    }),
+    "最新日语译文\n原文"
   );
 });
 

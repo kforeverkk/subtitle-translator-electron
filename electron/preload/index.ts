@@ -3,6 +3,7 @@ import type {
   AvailableModel,
   BatchProgress,
   BatchTranslationRequest,
+  CheckpointSaveWarning,
   SubtitlePreviewRequest,
 } from "../../src/types/electron-api";
 
@@ -23,16 +24,16 @@ const electronAPI = {
     return ipcRenderer.invoke("batch-translate", request);
   },
 
-  cancelTranslation(filePath: string): void {
-    ipcRenderer.send("cancel-translation", filePath);
+  cancelTranslation(taskId: string): void {
+    ipcRenderer.send("cancel-translation", taskId);
   },
 
   getSubtitlePreview(request: SubtitlePreviewRequest) {
     return ipcRenderer.invoke("get-subtitle-preview", request);
   },
 
-  getAnalysis(filePath: string) {
-    return ipcRenderer.invoke("get-analysis", filePath);
+  getAnalysis(taskId: string) {
+    return ipcRenderer.invoke("get-analysis", taskId);
   },
 
   openExternal(url: string) {
@@ -50,6 +51,18 @@ const electronAPI = {
 
     ipcRenderer.on("batch-progress", handler);
     return () => ipcRenderer.removeListener("batch-progress", handler);
+  },
+
+  onCheckpointSaveWarning(listener: (data: CheckpointSaveWarning) => void) {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      data: CheckpointSaveWarning
+    ) => {
+      listener(data);
+    };
+
+    ipcRenderer.on("checkpoint-save-warning", handler);
+    return () => ipcRenderer.removeListener("checkpoint-save-warning", handler);
   },
 };
 

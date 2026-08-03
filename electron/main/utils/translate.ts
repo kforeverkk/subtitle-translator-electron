@@ -8,9 +8,15 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { z } from "zod";
 import { translationErrorCodes } from "../../shared/translation-error-codes";
 import type { RequestRateLimiter } from "./request-rate-limiter";
-import { compactRepetitiveSubtitleText } from "./subtitle-chunks";
+import {
+  compactRepetitiveSubtitleText,
+  hasSubtitleTranslationText,
+} from "./subtitle-chunks";
 import { sampleSubtitlesForAnalysis } from "./subtitle-sampling";
-import type { TranslationSourceFingerprint } from "./translation-checkpoint";
+import {
+  isTranslationTaskId,
+  type TranslationSourceFingerprint,
+} from "./translation-checkpoint";
 import {
   formatSubtitleAnalysis,
   subtitleAnalysisSchema,
@@ -79,7 +85,7 @@ export interface SubtitleTranslationChunk {
 }
 
 export interface TranslationCacheDocument {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   format: SubtitleFileExtension;
   source: {
     name: string;
@@ -87,6 +93,9 @@ export interface TranslationCacheDocument {
   };
   translation?: {
     configFingerprint: string;
+  };
+  task?: {
+    id: string;
   };
   subtitle: ParsedSubtitle;
   analysis?: string;
@@ -160,6 +169,7 @@ export function createTranslationCacheDocument({
   sourceName,
   format,
   configFingerprint,
+  taskId,
   analysis,
   sourceFingerprint,
 }: {
@@ -167,17 +177,19 @@ export function createTranslationCacheDocument({
   sourceName: string;
   format: SubtitleFileExtension;
   configFingerprint: string;
+  taskId: string;
   analysis?: string;
   sourceFingerprint?: TranslationSourceFingerprint;
 }): TranslationCacheDocument {
   return {
-    version: 2,
+    version: 3,
     format,
     source: {
       name: sourceName,
       ...(sourceFingerprint ? { fingerprint: sourceFingerprint } : {}),
     },
     translation: { configFingerprint },
+    task: { id: taskId },
     subtitle,
     ...(analysis ? { analysis } : {}),
   };
@@ -199,18 +211,22 @@ export function parseTranslationCache(
 
   const source = value.source;
   if (
-    (value.version !== 1 && value.version !== 2) ||
+    (value.version !== 1 && value.version !== 2 && value.version !== 3) ||
     !isSubtitleFileExtension(value.format) ||
     !isRecord(source) ||
     typeof source.name !== "string" ||
     source.name.trim().length === 0 ||
     (source.fingerprint !== undefined &&
       !isSourceFingerprint(source.fingerprint)) ||
-    (value.version === 2 &&
+    ((value.version === 2 || value.version === 3) &&
       (!isRecord(value.translation) ||
         typeof value.translation.configFingerprint !== "string" ||
         !/^[a-f\d]{64}$/i.test(value.translation.configFingerprint))) ||
-    (value.version === 1 && value.translation !== undefined) ||
+    (value.version === 1 &&
+      (value.translation !== undefined || value.task !== undefined)) ||
+    (value.version === 2 && value.task !== undefined) ||
+    (value.version === 3 &&
+      (!isRecord(value.task) || !isTranslationTaskId(value.task.id))) ||
     !isParsedSubtitle(value.subtitle) ||
     getSubtitleCues(value.subtitle).length === 0 ||
     (value.analysis !== undefined && typeof value.analysis !== "string")
@@ -426,9 +442,13 @@ function saveTranslated(
       const originalText = sourceIsAss
         ? assTextToPlainText(node.data.text)
         : node.data.text;
-      const translatedText = sourceIsAss
-        ? assTextToPlainText(node.data.translatedText ?? node.data.text)
-        : node.data.translatedText ?? node.data.text;
+      const translatedText = hasSubtitleTranslationText(
+        node.data.translatedText
+      )
+        ? sourceIsAss
+          ? assTextToPlainText(node.data.translatedText)
+          : node.data.translatedText
+        : undefined;
       return {
         type: node.type,
         data: {
@@ -471,16 +491,11 @@ function saveTranslated(
                 const currentEvent = events[dialogueIndex++];
                 const translatedText =
                   currentEvent &&
-                  currentEvent.data.translatedText &&
-                  typeof line.value === "object" &&
-                  line.value !== null &&
-                  !Array.isArray(line.value)
+                  hasSubtitleTranslationText(
+                    currentEvent.data.translatedText
+                  )
                     ? currentEvent.data.translatedText
-                    : typeof line.value === "object" &&
-                        line.value !== null &&
-                        !Array.isArray(line.value)
-                      ? line.value.Text ?? ""
-                      : "";
+                    : undefined;
                 const value =
                   typeof line.value === "object" &&
                   line.value !== null &&
@@ -506,7 +521,7 @@ function saveTranslated(
                           translationStyle: styleNames.translation,
                           originalStyle: styleNames.original,
                         })
-                      : translatedText,
+                      : translatedText ?? (value.Text ?? ""),
                   },
                 };
               }

@@ -21,10 +21,10 @@ export function markBatchInvocationFailed(
   const next = { ...previous };
 
   for (const file of files) {
-    const current = previous[file.path];
+    const current = previous[file.taskId];
     if (current?.status === "done" || current?.status === "error") continue;
 
-    next[file.path] = {
+    next[file.taskId] = {
       ...(current ?? {}),
       progress: 0,
       status: "error",

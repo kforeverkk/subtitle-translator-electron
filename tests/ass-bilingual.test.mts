@@ -6,6 +6,7 @@ import {
   getSmallerAssFontSize,
   normalizeAssFontName,
 } from "../electron/main/utils/ass-bilingual.ts";
+import { clearSubtitleCueTranslations } from "../electron/main/utils/subtitle-chunks.ts";
 
 test("creates separate translation and smaller original styles", () => {
   const source = [
@@ -80,6 +81,66 @@ test("supports translated-first order and preserves source override tags", () =>
       originalStyle: "ST Original 0",
     }),
     "{\\rST Translation 0}譯文\\N{\\rST Original 0}{\\i1}Original"
+  );
+});
+
+test("keeps pending ASS dialogue text and override tags unchanged", () => {
+  const originalText = "{\\an8\\i1}Pending original";
+
+  assert.equal(
+    formatAssBilingualStyledText({
+      originalText,
+      order: "translate+original",
+      translationStyle: "ST Translation 0",
+      originalStyle: "ST Original 0",
+    }),
+    originalText
+  );
+  assert.equal(
+    formatAssBilingualStyledText({
+      originalText,
+      translatedText: "  ",
+      order: "original+translate",
+      translationStyle: "ST Translation 0",
+      originalStyle: "ST Original 0",
+    }),
+    originalText
+  );
+});
+
+test("treats identical non-empty ASS text as a completed translation", () => {
+  assert.equal(
+    formatAssBilingualStyledText({
+      originalText: "OK",
+      translatedText: "OK",
+      order: "translate+original",
+      translationStyle: "ST Translation 0",
+      originalStyle: "ST Original 0",
+    }),
+    "{\\rST Translation 0}OK\\N{\\rST Original 0}OK"
+  );
+});
+
+test("preserves original ASS overrides after a configuration restart", () => {
+  const cues = [
+    {
+      data: {
+        text: "{\\an8\\i1}原文",
+        translatedText: "Previous English translation",
+      },
+    },
+  ];
+
+  clearSubtitleCueTranslations(cues);
+  assert.equal(
+    formatAssBilingualStyledText({
+      originalText: cues[0].data.text,
+      translatedText: cues[0].data.translatedText,
+      order: "original+translate",
+      translationStyle: "ST Translation 0",
+      originalStyle: "ST Original 0",
+    }),
+    "{\\an8\\i1}原文"
   );
 });
 

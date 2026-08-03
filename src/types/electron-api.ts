@@ -1,4 +1,5 @@
 export interface SubtitleFile {
+  taskId: string;
   path: string;
   name: string;
 }
@@ -52,6 +53,7 @@ export interface BatchTranslationRequest {
 }
 
 export interface BatchProgress {
+  taskId: string;
   filePath: string;
   progress: number;
   status: TranslationStatus;
@@ -63,7 +65,13 @@ export interface BatchProgress {
   previewCues?: SubtitleCuePreview[];
 }
 
+export interface CheckpointSaveWarning {
+  taskId: string;
+  filePath: string;
+}
+
 export interface SubtitlePreviewRequest {
+  taskId: string;
   filePath: string;
   outputPath?: string;
 }
@@ -83,14 +91,17 @@ export interface ElectronAPI {
     apiHost: string;
   }): Promise<AvailableModel[]>;
   translateBatch(request: BatchTranslationRequest): Promise<{ success: true }>;
-  cancelTranslation(filePath: string): void;
+  cancelTranslation(taskId: string): void;
   getSubtitlePreview(
     request: SubtitlePreviewRequest
   ): Promise<{ cues: SubtitleCuePreview[] }>;
-  getAnalysis(filePath: string): Promise<string | null>;
+  getAnalysis(taskId: string): Promise<string | null>;
   openExternal(url: string): Promise<void>;
   setMenuLocale(locale: string): Promise<void>;
   onBatchProgress(listener: (data: BatchProgress) => void): () => void;
+  onCheckpointSaveWarning(
+    listener: (data: CheckpointSaveWarning) => void
+  ): () => void;
 }
 
 export interface LocalFontData {

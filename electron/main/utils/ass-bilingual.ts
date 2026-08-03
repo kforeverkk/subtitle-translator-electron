@@ -149,11 +149,15 @@ export function formatAssBilingualStyledText({
   originalStyle,
 }: {
   originalText: string;
-  translatedText: string;
+  translatedText?: string;
   order: AssBilingualOrder;
   translationStyle: string;
   originalStyle: string;
 }): string {
+  if (typeof translatedText !== "string" || translatedText.trim().length === 0) {
+    return originalText;
+  }
+
   const translated = `{\\r${translationStyle}}${translatedText.replace(/\r\n|\r|\n/g, "\\N")}`;
   const original = `{\\r${originalStyle}}${originalText.replace(/\r\n|\r|\n/g, "\\N")}`;
   return order === "translate+original"

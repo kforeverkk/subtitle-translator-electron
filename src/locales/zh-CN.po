@@ -989,6 +989,11 @@ msgid "toast.nativeMenuSyncFailed"
 msgstr "界面语言已更改，但原生菜单未能更新。它将在下次启动应用时更新。"
 
 #. js-lingui-explicit-id
+#: src/i18n-messages.ts:244
+msgid "toast.checkpointSaveFailed"
+msgstr "翻译仍在继续，但暂时无法保存 {file} 的恢复进度。若在后续保存成功前关闭应用，将从上一个有效检查点继续。"
+
+#. js-lingui-explicit-id
 #: src/i18n-messages.ts:127
 msgid "error.incompleteModelOutput"
 msgstr "模型在完成翻译前停止输出。请重试或改用其他模型。"

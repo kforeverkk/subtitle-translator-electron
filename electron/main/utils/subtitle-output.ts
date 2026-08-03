@@ -48,18 +48,24 @@ export function isBilingualOutput(outputFormat: SubtitleOutputFormat): boolean {
   return outputFormat !== "srt-translation";
 }
 
+function hasTranslationText(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 export function formatSrtOutputText({
   originalText,
   translatedText,
   outputFormat,
 }: {
   originalText: string;
-  translatedText: string;
+  translatedText?: string;
   outputFormat:
     | "srt-translation"
     | "srt-bilingual"
     | "srt-original-translation";
 }): string {
+  if (!hasTranslationText(translatedText)) return originalText;
+
   switch (outputFormat) {
     case "srt-translation":
       return translatedText;

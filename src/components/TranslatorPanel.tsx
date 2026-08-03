@@ -259,7 +259,7 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
   const finalPreviewCuesRef = useRef(
     new Map<string, SubtitleCuePreview[]>()
   );
-  const completedTranslationPathsRef = useRef(new Set<string>());
+  const completedTranslationTaskIdsRef = useRef(new Set<string>());
 
   useEffect(() => {
     const newPromptCount = getTranslationSuccessPromptCount(
@@ -278,19 +278,19 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
       const { previewCues, ...progressData } = data;
       setBatchProgress((previous) => ({
         ...previous,
-        [data.filePath]: {
-          ...previous[data.filePath],
+        [data.taskId]: {
+          ...previous[data.taskId],
           ...progressData,
           analysis:
             data.analysis === undefined
-              ? previous[data.filePath]?.analysis
+              ? previous[data.taskId]?.analysis
               : data.analysis ?? undefined,
         },
       }));
 
       if (previewCues) {
-        finalPreviewCuesRef.current.set(data.filePath, previewCues);
-        if (selectedFile?.path === data.filePath) {
+        finalPreviewCuesRef.current.set(data.taskId, previewCues);
+        if (selectedFile?.taskId === data.taskId) {
           previewRequestIdRef.current += 1;
           setCues(previewCues);
           setPreviewLoadStatus("success");
@@ -299,7 +299,7 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
       }
 
       if (
-        selectedFile?.path === data.filePath &&
+        selectedFile?.taskId === data.taskId &&
         data.analysis !== undefined
       ) {
         setSelectedAnalysis(data.analysis ?? undefined);
@@ -308,14 +308,14 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
       const now = Date.now();
       if (
         detailOpen &&
-        selectedFile?.path === data.filePath &&
+        selectedFile?.taskId === data.taskId &&
         previewLoadStatus === "success" &&
         data.status === "translating" &&
         !previewCues &&
         now - lastPreviewUpdateRef.current > 800
       ) {
         lastPreviewUpdateRef.current = now;
-        void loadCues(data.filePath, false, data.outputPath);
+        void loadCues(selectedFile, false, data.outputPath);
       }
 
       if (data.status === "error") {
@@ -327,9 +327,9 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
       }
       if (
         data.status === "done" &&
-        !completedTranslationPathsRef.current.has(data.filePath)
+        !completedTranslationTaskIdsRef.current.has(data.taskId)
       ) {
-        completedTranslationPathsRef.current.add(data.filePath);
+        completedTranslationTaskIdsRef.current.add(data.taskId);
         incrementTranslationSuccessCount();
         toast.success(
           t("toast.translationCompleted", {
@@ -347,6 +347,18 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
     previewLoadStatus,
     selectedFile,
   ]);
+
+  useEffect(() => {
+    if (!window.electronAPI?.onCheckpointSaveWarning) return;
+
+    return window.electronAPI.onCheckpointSaveWarning(({ filePath }) => {
+      toast.warning(
+        t("toast.checkpointSaveFailed", {
+          file: filePath.split(/[\\/]/).at(-1) || filePath,
+        })
+      );
+    });
+  }, [i18n.locale]);
 
   useEffect(() => {
     if (!addDialogOpen) {
@@ -408,10 +420,10 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
   }, [addTaskRequest]);
 
   const completedCount = files.filter(
-    (file) => batchProgress[file.path]?.status === "done"
+    (file) => batchProgress[file.taskId]?.status === "done"
   ).length;
   const activeCount = files.filter((file) => {
-    const status = batchProgress[file.path]?.status;
+    const status = batchProgress[file.taskId]?.status;
     return status === "analyzing" || status === "translating";
   }).length;
   const customModelValue = modelSearch.trim();
@@ -451,10 +463,10 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
 
       try {
         const path = getFilePath(file);
-        if (!path || files.some((item) => item.path === path) || accepted.some((item) => item.path === path)) {
+        if (!path || accepted.some((item) => item.path === path)) {
           continue;
         }
-        accepted.push({ path, name: file.name });
+        accepted.push({ taskId: crypto.randomUUID(), path, name: file.name });
       } catch (error: unknown) {
         toast.error(getLocalizedError(error, "toast.fileReadFailed", t));
       }
@@ -494,7 +506,7 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
   };
 
   const loadCues = async (
-    filePath: string,
+    file: SubtitleFile,
     showLoading = true,
     outputPath?: string
   ) => {
@@ -506,7 +518,8 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
 
     try {
       const preview = await window.electronAPI.getSubtitlePreview({
-        filePath,
+        taskId: file.taskId,
+        filePath: file.path,
         outputPath,
       });
       if (requestId !== previewRequestIdRef.current) return;
@@ -526,30 +539,30 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
   const openDetails = async (file: SubtitleFile) => {
     const detailRequestId = ++detailRequestIdRef.current;
     setSelectedFile(file);
-    setSelectedAnalysis(batchProgress[file.path]?.analysis ?? undefined);
+    setSelectedAnalysis(batchProgress[file.taskId]?.analysis ?? undefined);
     setCues([]);
     setDetailOpen(true);
-    const cachedPreview = finalPreviewCuesRef.current.get(file.path);
+    const cachedPreview = finalPreviewCuesRef.current.get(file.taskId);
     if (cachedPreview) {
       setCues(cachedPreview);
       setPreviewLoadStatus("success");
       setPreviewLoadError("");
     } else {
       await loadCues(
-        file.path,
+        file,
         true,
-        batchProgress[file.path]?.outputPath
+        batchProgress[file.taskId]?.outputPath
       );
     }
     try {
-      const analysis = await window.electronAPI.getAnalysis(file.path);
+      const analysis = await window.electronAPI.getAnalysis(file.taskId);
       if (detailRequestId !== detailRequestIdRef.current) return;
       if (analysis) {
         setSelectedAnalysis(analysis);
         setBatchProgress((previous) => ({
           ...previous,
-          [file.path]: {
-            ...(previous[file.path] || { progress: 0, status: "pending" }),
+          [file.taskId]: {
+            ...(previous[file.taskId] || { progress: 0, status: "pending" }),
             analysis,
           },
         }));
@@ -570,30 +583,36 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
     setPreviewLoadError("");
   };
 
-  const removeFile = (filePath: string) => {
-    window.electronAPI.cancelTranslation(filePath);
-    finalPreviewCuesRef.current.delete(filePath);
-    setFiles(files.filter((file) => file.path !== filePath));
+  const removeFile = (file: SubtitleFile) => {
+    window.electronAPI.cancelTranslation(file.taskId);
+    finalPreviewCuesRef.current.delete(file.taskId);
+    setFiles(files.filter((candidate) => candidate.taskId !== file.taskId));
     setBatchProgress((previous) => {
       const next = { ...previous };
-      delete next[filePath];
+      delete next[file.taskId];
       return next;
     });
-    if (selectedFile?.path === filePath) closeDetails();
+    if (selectedFile?.taskId === file.taskId) closeDetails();
     toast.success(t("toast.taskRemoved"));
   };
 
   const clearCompletedFiles = () => {
     if (completedCount === 0) return;
-    const remaining = files.filter((file) => batchProgress[file.path]?.status !== "done");
+    const remaining = files.filter(
+      (file) => batchProgress[file.taskId]?.status !== "done"
+    );
     for (const file of files) {
-      if (batchProgress[file.path]?.status === "done") {
-        finalPreviewCuesRef.current.delete(file.path);
+      if (batchProgress[file.taskId]?.status === "done") {
+        finalPreviewCuesRef.current.delete(file.taskId);
       }
     }
     setFiles(remaining);
     setBatchProgress((previous) =>
-      Object.fromEntries(Object.entries(previous).filter(([path]) => remaining.some((file) => file.path === path)))
+      Object.fromEntries(
+        Object.entries(previous).filter(([taskId]) =>
+          remaining.some((file) => file.taskId === taskId)
+        )
+      )
     );
     toast.success(t("toast.completedCleared", { count: completedCount }));
   };
@@ -603,12 +622,12 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
     translationModel: string
   ) => {
     const translatableFiles = filesToTranslate.filter(
-      (file) => batchProgress[file.path]?.status !== "done"
+      (file) => batchProgress[file.taskId]?.status !== "done"
     );
     if (translatableFiles.length === 0) return;
     for (const file of translatableFiles) {
-      finalPreviewCuesRef.current.delete(file.path);
-      completedTranslationPathsRef.current.delete(file.path);
+      finalPreviewCuesRef.current.delete(file.taskId);
+      completedTranslationTaskIdsRef.current.delete(file.taskId);
     }
     if (!lang.trim()) {
       toast.error(t("toast.targetLanguageRequired"));
@@ -624,7 +643,7 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
       ...previous,
       ...Object.fromEntries(
         translatableFiles.map((file) => [
-          file.path,
+          file.taskId,
           {
             progress: 0,
             status: "pending" as const,
@@ -705,7 +724,10 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
   };
 
   const renderStatus = (file: SubtitleFile) => {
-    const progress = batchProgress[file.path] || { progress: 0, status: "pending" as const };
+    const progress = batchProgress[file.taskId] || {
+      progress: 0,
+      status: "pending" as const,
+    };
     const progressValue = Math.max(0, Math.min(100, progress.progress || 0));
     let detail = t("task.progress.waiting");
     if (progress.status === "analyzing") detail = t("task.progress.analyzing");
@@ -852,9 +874,12 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
               </TableHeader>
               <TableBody>
               {files.map((file) => {
-                const progress = batchProgress[file.path] || { progress: 0, status: "pending" as const };
+                const progress = batchProgress[file.taskId] || {
+                  progress: 0,
+                  status: "pending" as const,
+                };
                 return (
-                  <TableRow key={file.path}>
+                  <TableRow key={file.taskId}>
                     <TableCell className="min-w-[320px] px-5 py-4">
                       <div className="flex min-w-0 items-center gap-3">
                         <FileAudio className="shrink-0 text-muted-foreground" />
@@ -918,7 +943,7 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
                         <Button
                           variant="ghost"
                           size="icon-sm"
-                          onClick={() => removeFile(file.path)}
+                          onClick={() => removeFile(file)}
                           aria-label={t("tasks.aria.remove", { file: file.name })}
                         >
                           <Trash2 />
@@ -1228,7 +1253,7 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
                 aria-label={t("tasks.output.selectedFiles", { count: pendingFiles.length })}
               >
                 {pendingFiles.map((file) => (
-                  <li key={file.path} className="shrink-0 truncate py-0.5" title={file.path}>
+                  <li key={file.taskId} className="shrink-0 truncate py-0.5" title={file.path}>
                     {file.name}
                   </li>
                 ))}
@@ -1251,7 +1276,7 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
           <SheetHeader className="border-b pr-14">
             <div className="flex items-center gap-2">
               <SheetTitle className="truncate">{t("tasks.details.title")}</SheetTitle>
-              {selectedFile && <Badge variant={getStatusVariant(batchProgress[selectedFile.path]?.status || "pending")}>{statusCopy[batchProgress[selectedFile.path]?.status || "pending"]}</Badge>}
+              {selectedFile && <Badge variant={getStatusVariant(batchProgress[selectedFile.taskId]?.status || "pending")}>{statusCopy[batchProgress[selectedFile.taskId]?.status || "pending"]}</Badge>}
             </div>
             <SheetDescription className="truncate" title={selectedFile?.path}>{selectedFile?.name || ""}</SheetDescription>
           </SheetHeader>
@@ -1260,16 +1285,16 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
               <div className="flex items-end justify-between gap-4 border-b px-5 py-5">
                 <div>
                   <p className="text-sm text-muted-foreground">{t("tasks.details.progress")}</p>
-                  <p className="mt-1 text-sm font-medium">{statusCopy[batchProgress[selectedFile.path]?.status || "pending"]}</p>
+                  <p className="mt-1 text-sm font-medium">{statusCopy[batchProgress[selectedFile.taskId]?.status || "pending"]}</p>
                 </div>
-                <p className="text-4xl font-semibold tabular-nums">{(batchProgress[selectedFile.path]?.progress || 0).toFixed(0)}%</p>
+                <p className="text-4xl font-semibold tabular-nums">{(batchProgress[selectedFile.taskId]?.progress || 0).toFixed(0)}%</p>
               </div>
               <div className="px-5 py-5">
                 <Progress
-                  value={batchProgress[selectedFile.path]?.progress || 0}
+                  value={batchProgress[selectedFile.taskId]?.progress || 0}
                   aria-label={t("tasks.aria.progress", {
                     file: selectedFile.name,
-                    progress: batchProgress[selectedFile.path]?.progress || 0,
+                    progress: batchProgress[selectedFile.taskId]?.progress || 0,
                   })}
                 />
               </div>
@@ -1281,7 +1306,7 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
                   <span className="flex items-center gap-2"><span className="size-2 rounded-full border" />{t("tasks.details.stage.organize")}</span>
                 </div>
               </div>
-              {batchProgress[selectedFile.path]?.status === "error" && (
+              {batchProgress[selectedFile.taskId]?.status === "error" && (
                 <section
                   className="border-t px-5 py-5"
                   aria-labelledby="task-error-details-title"
@@ -1298,7 +1323,7 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
                   <ScrollArea className="mt-3 h-40 rounded-lg border bg-muted/20">
                     <pre className="whitespace-pre-wrap break-words p-3 font-mono text-xs leading-5 text-muted-foreground select-text [overflow-wrap:anywhere]">
                       {getLocalizedError(
-                        batchProgress[selectedFile.path]?.error,
+                        batchProgress[selectedFile.taskId]?.error,
                         "toast.unknownError",
                         t
                       )}
@@ -1349,9 +1374,9 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
                           size="sm"
                           onClick={() =>
                             void loadCues(
-                              selectedFile.path,
+                              selectedFile,
                               true,
-                              batchProgress[selectedFile.path]?.outputPath
+                              batchProgress[selectedFile.taskId]?.outputPath
                             )
                           }
                         >
@@ -1391,18 +1416,18 @@ export default function TranslatorPanel({ addTaskRequest }: TranslatorPanelProps
           )}
           <div className="flex shrink-0 justify-end gap-2 border-t p-4">
             {selectedFile &&
-              batchProgress[selectedFile.path]?.status === "error" && (
+              batchProgress[selectedFile.taskId]?.status === "error" && (
                 <Button
                   variant="outline"
                   disabled={
                     isTranslating ||
-                    !(batchProgress[selectedFile.path]?.model || model).trim()
+                    !(batchProgress[selectedFile.taskId]?.model || model).trim()
                   }
                   onClick={() =>
                     void startBatchTranslation(
                       [selectedFile],
                       (
-                        batchProgress[selectedFile.path]?.model || model
+                        batchProgress[selectedFile.taskId]?.model || model
                       ).trim()
                     )
                   }

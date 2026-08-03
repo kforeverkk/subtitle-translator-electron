@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  clearSubtitleCueTranslations,
   compactRepetitiveSubtitleText,
   isSubtitleCueComplete,
   splitIntoChunk,
@@ -35,6 +36,28 @@ test("retries blank translations for non-blank source cues", () => {
 test("skips blank source cues and bounds invalid chunk sizes", () => {
   assert.equal(isSubtitleCueComplete(cue("  ")), true);
   assert.equal(splitIntoChunk([cue("A"), cue("B")], 0).length, 2);
+});
+
+test("clears every old translation whenever content settings change", () => {
+  const cues = [
+    cue("First", "English one"),
+    cue("Second", "English two"),
+    cue("Third"),
+  ];
+
+  clearSubtitleCueTranslations(cues);
+  assert.deepEqual(
+    cues.map(({ data }) => data.translatedText),
+    [undefined, undefined, undefined]
+  );
+
+  cues[0].data.translatedText = "Traduction française";
+  cues[1].data.translatedText = "Deuxième traduction";
+  clearSubtitleCueTranslations(cues);
+  assert.deepEqual(
+    cues.map(({ data }) => data.translatedText),
+    [undefined, undefined, undefined]
+  );
 });
 
 test("compacts pathological single-token repetition", () => {

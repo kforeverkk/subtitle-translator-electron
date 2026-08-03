@@ -13,7 +13,6 @@ import {
 import { translationErrorCodes } from "../shared/translation-error-codes";
 import { release } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import fs, { type Stats } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -24,6 +23,7 @@ import { APICallError, NoObjectGeneratedError } from "ai";
 import {
   type BatchProgress,
   type BatchTranslationRequest,
+  type CheckpointSaveWarning,
 } from "../../src/types/electron-api";
 import {
   createTranslationCacheDocument,
@@ -44,6 +44,7 @@ import { fetchAvailableModels } from "./utils/models";
 import { RequestRateLimiter } from "./utils/request-rate-limiter";
 import { isAllowedApiHost } from "./utils/api-host";
 import {
+  clearSubtitleCueTranslations,
   isSubtitleCueComplete,
   splitIntoChunk,
 } from "./utils/subtitle-chunks";
@@ -53,10 +54,20 @@ import {
   hasPathClaimConflict,
 } from "./utils/path-claims";
 import {
+  backupTranslationCheckpoint,
+  copyTranslationCheckpointBackup,
+  createCheckpointWriter,
   createTranslationConfigFingerprint,
+  getDiscoveredTaskTranslationCheckpointPaths,
+  getOwnedTranslationCheckpointBackupPaths,
+  getTaskTranslationCheckpointPath,
   getTranslationCheckpointCandidates,
   getTranslationCheckpointResumeMetadata,
   hasMatchingCheckpointSource,
+  hasMatchingTranslationConfig,
+  hasMatchingTranslationTask,
+  isTranslationTaskId,
+  removeTranslationCheckpointArtifacts,
   type TranslationSourceFingerprint,
 } from "./utils/translation-checkpoint";
 import type {
@@ -81,6 +92,12 @@ process.env.DIST = join(process.env.DIST_ELECTRON, "../dist");
 process.env.PUBLIC = process.env.VITE_DEV_SERVER_URL
   ? join(process.env.DIST_ELECTRON, "../public")
   : process.env.DIST;
+
+// Keep Electron E2E runs independent from an installed copy of the app. This
+// must happen before requestSingleInstanceLock(), because Electron scopes that
+// lock to the user-data directory. Production launches never set this value.
+const e2eUserDataPath = process.env.SUBTITLE_TRANSLATOR_E2E_USER_DATA;
+if (e2eUserDataPath) app.setPath("userData", e2eUserDataPath);
 
 // Disable GPU Acceleration for Windows 7
 if (release().startsWith("6.1")) app.disableHardwareAcceleration();
@@ -131,6 +148,9 @@ const activeTranslationControllers = new Map<string, Set<AbortController>>();
 
 const subtitleFileSchema = z
   .object({
+    taskId: z.string().refine(isTranslationTaskId, {
+      message: "Invalid translation task ID",
+    }),
     path: z.string().min(1),
     name: z.string().min(1),
   })
@@ -181,11 +201,21 @@ const translationParamsSchema = z.object({
 });
 
 const batchTranslationRequestSchema = z.object({
-  files: z.array(subtitleFileSchema).min(1).max(100),
+  files: z
+    .array(subtitleFileSchema)
+    .min(1)
+    .max(100)
+    .refine(
+      (files) => new Set(files.map((file) => file.taskId)).size === files.length,
+      { message: "Translation task IDs must be unique" }
+    ),
   params: translationParamsSchema,
 });
 
 const subtitlePreviewRequestSchema = z.object({
+  taskId: z.string().refine(isTranslationTaskId, {
+    message: "Invalid translation task ID",
+  }),
   filePath: z.string().min(1),
   outputPath: z
     .string()
@@ -241,23 +271,23 @@ function assertTrustedSender(event: { senderFrame: WebFrameMain | null }): void 
 }
 
 function registerTranslationController(
-  filePath: string,
+  taskId: string,
   controller: AbortController
 ): () => void {
-  const controllers = activeTranslationControllers.get(filePath) || new Set();
+  const controllers = activeTranslationControllers.get(taskId) || new Set();
   controllers.add(controller);
-  activeTranslationControllers.set(filePath, controllers);
+  activeTranslationControllers.set(taskId, controllers);
 
   return () => {
     controllers.delete(controller);
     if (controllers.size === 0) {
-      activeTranslationControllers.delete(filePath);
+      activeTranslationControllers.delete(taskId);
     }
   };
 }
 
-function cancelTranslation(filePath: string): void {
-  for (const controller of activeTranslationControllers.get(filePath) || []) {
+function cancelTranslation(taskId: string): void {
+  for (const controller of activeTranslationControllers.get(taskId) || []) {
     controller.abort();
   }
 }
@@ -269,16 +299,6 @@ function isAllowedExternalUrl(target: string): boolean {
   } catch {
     return false;
   }
-}
-
-function getTranslationCachePath(
-  filePath: string,
-  sourceName = path.basename(filePath)
-): string {
-  const candidates = getTranslationCheckpointCandidates(filePath, sourceName);
-  return (
-    candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0]
-  );
 }
 
 function getValidatedOutputDirectory(
@@ -334,41 +354,131 @@ interface TranslationInput {
   cacheDocument?: TranslationCacheDocument;
   sourceFingerprint?: TranslationSourceFingerprint;
   checkpointPath: string;
-  shouldBackupCheckpoint: boolean;
+  checkpointSourcePath?: string;
+  shouldPreserveCheckpointSource: boolean;
+  shouldClaimCheckpointSource: boolean;
+  shouldRestartTranslation: boolean;
+  backupOwnerTaskIds: string[];
 }
 
-function readMatchingCheckpoint(
-  checkpointPath: string,
-  sourceName: string,
-  sourceExtension: SubtitleFileExtension,
-  sourceFingerprint: TranslationSourceFingerprint
+function readCheckpoint(
+  checkpointPath: string
 ): TranslationCacheDocument | undefined {
   try {
-    const checkpoint = parseTranslationCache(
-      fs.readFileSync(checkpointPath, "utf8")
-    );
-    return hasMatchingCheckpointSource(
-      checkpoint,
-      sourceName,
-      sourceExtension,
-      sourceFingerprint
-    )
-      ? checkpoint
-      : undefined;
+    return parseTranslationCache(fs.readFileSync(checkpointPath, "utf8"));
   } catch (error: unknown) {
     const errorCode =
       typeof error === "object" && error !== null && "code" in error
         ? error.code
         : undefined;
     if (errorCode !== "ENOENT") {
-      console.warn("Ignoring an invalid translation checkpoint:", error);
+      console.warn(
+        `Ignoring an invalid translation checkpoint: ${checkpointPath}`,
+        error
+      );
     }
     return undefined;
   }
 }
 
+function readMatchingCheckpoint(
+  checkpointPath: string,
+  sourceName: string,
+  sourceExtension: SubtitleFileExtension,
+  sourceFingerprint: TranslationSourceFingerprint,
+  expectedTaskId?: string
+): TranslationCacheDocument | undefined {
+  const checkpoint = readCheckpoint(checkpointPath);
+  return checkpoint &&
+    hasMatchingCheckpointSource(
+      checkpoint,
+      sourceName,
+      sourceExtension,
+      sourceFingerprint
+    ) &&
+    (!expectedTaskId || hasMatchingTranslationTask(checkpoint, expectedTaskId))
+    ? checkpoint
+    : undefined;
+}
+
+function readCompatibleLegacyCheckpoint(
+  checkpointPath: string,
+  sourceName: string,
+  sourceExtension: SubtitleFileExtension,
+  sourceFingerprint: TranslationSourceFingerprint
+): TranslationCacheDocument | undefined {
+  const checkpoint = readCheckpoint(checkpointPath);
+  if (!checkpoint) return undefined;
+  if (
+    hasMatchingCheckpointSource(
+      checkpoint,
+      sourceName,
+      sourceExtension,
+      sourceFingerprint
+    )
+  ) {
+    return checkpoint;
+  }
+
+  // v1 did not record a reliable source/config identity. It can still be read
+  // for preview/import; batch resume rejects it because its config cannot match.
+  return checkpoint.version === 1 &&
+    path.basename(checkpoint.source.name) === sourceName &&
+    checkpoint.format === sourceExtension
+    ? checkpoint
+    : undefined;
+}
+
+function findMatchingTaskCheckpoint(
+  filePath: string,
+  sourceName: string,
+  sourceExtension: SubtitleFileExtension,
+  sourceFingerprint: TranslationSourceFingerprint,
+  configFingerprint: string,
+  targetCheckpointPath: string
+): { path: string; checkpoint: TranslationCacheDocument } | undefined {
+  let directoryEntries: string[];
+  try {
+    directoryEntries = fs.readdirSync(path.dirname(filePath));
+  } catch {
+    return undefined;
+  }
+
+  const candidates = getDiscoveredTaskTranslationCheckpointPaths(
+    filePath,
+    directoryEntries,
+    sourceName
+  )
+    .filter((candidate) => candidate !== targetCheckpointPath)
+    .flatMap((candidate) => {
+      try {
+        return [{ path: candidate, mtimeMs: fs.statSync(candidate).mtimeMs }];
+      } catch {
+        return [];
+      }
+    })
+    .sort((left, right) => right.mtimeMs - left.mtimeMs);
+
+  for (const candidate of candidates) {
+    const checkpoint = readMatchingCheckpoint(
+      candidate.path,
+      sourceName,
+      sourceExtension,
+      sourceFingerprint
+    );
+    if (
+      checkpoint?.version === 3 &&
+      hasMatchingTranslationConfig(checkpoint, configFingerprint)
+    ) {
+      return { path: candidate.path, checkpoint };
+    }
+  }
+  return undefined;
+}
+
 function readTranslationInput(
   filePath: string,
+  taskId: string,
   configFingerprint?: string
 ): TranslationInput {
   const fileInfo = assertTranslationInputFile(filePath);
@@ -382,6 +492,7 @@ function readTranslationInput(
       cacheDocument,
       configFingerprint
     );
+    const previousTaskId = cacheDocument.task?.id;
 
     return {
       parsed: cacheDocument.subtitle,
@@ -391,9 +502,13 @@ function readTranslationInput(
       cacheDocument,
       sourceFingerprint: cacheDocument.source.fingerprint,
       checkpointPath: filePath,
-      // Explicitly selected v1 checkpoints remain resumable, but keep a copy
-      // before migrating them to the configuration-bound v2 format.
-      shouldBackupCheckpoint: resumeMetadata.shouldBackupCheckpoint,
+      checkpointSourcePath: filePath,
+      shouldPreserveCheckpointSource: resumeMetadata.shouldBackupCheckpoint,
+      shouldClaimCheckpointSource: true,
+      shouldRestartTranslation: resumeMetadata.shouldRestartTranslation,
+      backupOwnerTaskIds: [taskId, previousTaskId].filter(
+        (value): value is string => isTranslationTaskId(value)
+      ),
     };
   }
 
@@ -407,89 +522,151 @@ function readTranslationInput(
     size: fileInfo.size,
     mtimeMs: fileInfo.mtimeMs,
   };
-  const checkpointPath = getTranslationCachePath(filePath, sourceName);
-  const checkpoint = readMatchingCheckpoint(
+  const checkpointPath = getTaskTranslationCheckpointPath(
+    filePath,
+    taskId,
+    sourceName
+  );
+  const exactCheckpointExists = fs.existsSync(checkpointPath);
+  const exactCheckpoint = readMatchingCheckpoint(
     checkpointPath,
     sourceName,
     sourceExtension,
-    sourceFingerprint
+    sourceFingerprint,
+    taskId
   );
-  const resumeMetadata = checkpoint
-    ? getTranslationCheckpointResumeMetadata(checkpoint, configFingerprint)
-    : undefined;
+  if (exactCheckpoint) {
+    const resumeMetadata = getTranslationCheckpointResumeMetadata(
+      exactCheckpoint,
+      configFingerprint
+    );
+    return {
+      parsed: exactCheckpoint.subtitle,
+      sourceName,
+      sourceExtension,
+      analysis: resumeMetadata.analysis,
+      cacheDocument: exactCheckpoint,
+      sourceFingerprint,
+      checkpointPath,
+      checkpointSourcePath: checkpointPath,
+      shouldPreserveCheckpointSource: resumeMetadata.shouldBackupCheckpoint,
+      shouldClaimCheckpointSource: true,
+      shouldRestartTranslation: resumeMetadata.shouldRestartTranslation,
+      backupOwnerTaskIds: [taskId],
+    };
+  }
 
-  return checkpoint
-    ? {
-        parsed: checkpoint.subtitle,
-        sourceName,
-        sourceExtension,
-        analysis: resumeMetadata?.analysis,
-        cacheDocument: checkpoint,
-        sourceFingerprint,
-        checkpointPath,
-        shouldBackupCheckpoint:
-          resumeMetadata?.shouldBackupCheckpoint ?? false,
-      }
-    : {
-        parsed: parseSubtitle(fs.readFileSync(filePath, "utf8"), extension),
-        sourceName,
-        sourceExtension,
-        sourceFingerprint,
-        checkpointPath,
-        shouldBackupCheckpoint: fs.existsSync(checkpointPath),
-      };
-}
+  if (exactCheckpointExists) {
+    return {
+      parsed: parseSubtitle(fs.readFileSync(filePath, "utf8"), extension),
+      sourceName,
+      sourceExtension,
+      sourceFingerprint,
+      checkpointPath,
+      checkpointSourcePath: checkpointPath,
+      shouldPreserveCheckpointSource: true,
+      shouldClaimCheckpointSource: true,
+      shouldRestartTranslation: false,
+      backupOwnerTaskIds: [taskId],
+    };
+  }
 
-function createCheckpointWriter(
-  checkpointPath: string,
-  createDocument: () => TranslationCacheDocument
-): { write: () => Promise<void>; wait: () => Promise<void> } {
-  let pending = Promise.resolve();
-
-  const write = () => {
-    pending = pending
-      .catch(() => undefined)
-      .then(async () => {
-        const temporaryPath = `${checkpointPath}.${process.pid}.${randomUUID()}.tmp`;
-        const content = `${JSON.stringify(createDocument(), null, 2)}\n`;
-        await fs.promises.writeFile(temporaryPath, content, "utf8");
-        try {
-          await fs.promises.rename(temporaryPath, checkpointPath);
-        } catch {
-          await fs.promises.writeFile(checkpointPath, content, "utf8");
-          await fs.promises.unlink(temporaryPath).catch(() => undefined);
-        }
-      });
-
-    return pending;
-  };
-
-  return {
-    write,
-    wait: () => pending,
-  };
-}
-
-async function backupTranslationCheckpoint(
-  checkpointPath: string
-): Promise<string> {
-  const backupPath = `${checkpointPath}.${Date.now()}.${randomUUID()}.backup.json`;
-  await fs.promises.rename(checkpointPath, backupPath);
-  return backupPath;
-}
-
-async function removeTranslationCheckpoint(checkpointPath: string): Promise<void> {
-  try {
-    await fs.promises.unlink(checkpointPath);
-  } catch (error: unknown) {
-    const errorCode =
-      typeof error === "object" && error !== null && "code" in error
-        ? error.code
-        : undefined;
-    if (errorCode !== "ENOENT") {
-      console.warn("Failed to remove translation checkpoint:", error);
+  let selectedCheckpoint:
+    | { path: string; checkpoint: TranslationCacheDocument }
+    | undefined;
+  let unverifiableV1Path: string | undefined;
+  for (const legacyPath of getTranslationCheckpointCandidates(
+    filePath,
+    sourceName
+  )) {
+    const checkpoint = readCompatibleLegacyCheckpoint(
+      legacyPath,
+      sourceName,
+      sourceExtension,
+      sourceFingerprint
+    );
+    const resumeMetadata = checkpoint
+      ? getTranslationCheckpointResumeMetadata(checkpoint, configFingerprint)
+      : undefined;
+    if (
+      checkpoint?.version === 1 &&
+      configFingerprint &&
+      resumeMetadata?.shouldRestartTranslation
+    ) {
+      unverifiableV1Path ??= legacyPath;
+      continue;
+    }
+    if (checkpoint && !resumeMetadata?.shouldRestartTranslation) {
+      selectedCheckpoint = { path: legacyPath, checkpoint };
+      break;
     }
   }
+  if (!selectedCheckpoint && configFingerprint) {
+    selectedCheckpoint = findMatchingTaskCheckpoint(
+      filePath,
+      sourceName,
+      sourceExtension,
+      sourceFingerprint,
+      configFingerprint,
+      checkpointPath
+    );
+  }
+
+  if (selectedCheckpoint) {
+    const resumeMetadata = getTranslationCheckpointResumeMetadata(
+      selectedCheckpoint.checkpoint,
+      configFingerprint
+    );
+    const previousTaskId = selectedCheckpoint.checkpoint.task?.id;
+    return {
+      parsed: selectedCheckpoint.checkpoint.subtitle,
+      sourceName,
+      sourceExtension,
+      analysis: resumeMetadata.analysis,
+      cacheDocument: selectedCheckpoint.checkpoint,
+      sourceFingerprint,
+      checkpointPath,
+      checkpointSourcePath: selectedCheckpoint.path,
+      shouldPreserveCheckpointSource: true,
+      shouldClaimCheckpointSource: true,
+      shouldRestartTranslation: resumeMetadata.shouldRestartTranslation,
+      backupOwnerTaskIds: [taskId, previousTaskId].filter(
+        (value): value is string => isTranslationTaskId(value)
+      ),
+    };
+  }
+
+  if (unverifiableV1Path) {
+    return {
+      // v1 cannot prove that its cues still belong to the current source. Use
+      // the current subtitle for a clean task and archive v1 only after v3 is
+      // durable, so no stale text can leak into the new translation.
+      parsed: parseSubtitle(fs.readFileSync(filePath, "utf8"), extension),
+      sourceName,
+      sourceExtension,
+      sourceFingerprint,
+      checkpointPath,
+      checkpointSourcePath: unverifiableV1Path,
+      shouldPreserveCheckpointSource: true,
+      // Multiple new-language tasks may see the same shared v1 file. They may
+      // race to archive it after their own v3 commit; ENOENT is handled safely.
+      shouldClaimCheckpointSource: false,
+      shouldRestartTranslation: false,
+      backupOwnerTaskIds: [taskId],
+    };
+  }
+
+  return {
+    parsed: parseSubtitle(fs.readFileSync(filePath, "utf8"), extension),
+    sourceName,
+    sourceExtension,
+    sourceFingerprint,
+    checkpointPath,
+    shouldPreserveCheckpointSource: false,
+    shouldClaimCheckpointSource: false,
+    shouldRestartTranslation: false,
+    backupOwnerTaskIds: [taskId],
+  };
 }
 
 function getErrorDetails(error: unknown): {
@@ -565,6 +742,19 @@ function getErrorMessage(error: unknown): string {
 
 function sendProgress(sender: WebContents, progress: BatchProgress): void {
   sender.send("batch-progress", progress);
+}
+
+function sendCheckpointSaveWarning(
+  sender: WebContents,
+  warning: CheckpointSaveWarning
+): void {
+  if (sender.isDestroyed()) return;
+
+  try {
+    sender.send("checkpoint-save-warning", warning);
+  } catch (error: unknown) {
+    console.warn("Failed to send checkpoint save warning:", error);
+  }
 }
 
 function getApplicationLocale(): ApplicationLocale {
@@ -922,11 +1112,10 @@ async function retryTranslate<TInput, TResult>(
   throw new Error("Automatic translation retry loop exited unexpectedly");
 }
 
-ipcMain.on("cancel-translation", (event, filePath: unknown) => {
+ipcMain.on("cancel-translation", (event, taskId: unknown) => {
   if (!isTrustedSender(event.senderFrame)) return;
-  const parsedFilePath = z.string().min(1).safeParse(filePath);
-  if (!parsedFilePath.success) return;
-  cancelTranslation(parsedFilePath.data);
+  if (!isTranslationTaskId(taskId)) return;
+  cancelTranslation(taskId);
 });
 
 ipcMain.handle("batch-translate", async (event, request: unknown) => {
@@ -945,21 +1134,25 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
     requestsPerMinute: params.requestsPerMinute,
     minimumIntervalMs: params.delay,
   });
-  const translationControllersByPath = new Map<string, AbortController>();
+  if (
+    files.some((file) => activeTranslationControllers.has(file.taskId))
+  ) {
+    throw new Error("Translation task ID is already active");
+  }
+  const translationControllersByTaskId = new Map<string, AbortController>();
   const unregisterTranslationControllers: Array<() => void> = [];
   for (const file of files) {
-    if (translationControllersByPath.has(file.path)) continue;
     const controller = new AbortController();
-    translationControllersByPath.set(file.path, controller);
+    translationControllersByTaskId.set(file.taskId, controller);
     unregisterTranslationControllers.push(
-      registerTranslationController(file.path, controller)
+      registerTranslationController(file.taskId, controller)
     );
   }
   // Keep these claims for the whole request so later files cannot silently
   // overwrite an earlier file after its active write lock has been released.
   const batchPathClaims = new Set<string>();
   const processFile = async (file: BatchTranslationRequest["files"][number]) => {
-    const abortSignal = translationControllersByPath.get(file.path)?.signal;
+    const abortSignal = translationControllersByTaskId.get(file.taskId)?.signal;
     if (!abortSignal) return;
     let outputPath: string | undefined;
     let releasePathClaims: (() => void) | undefined;
@@ -967,10 +1160,14 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       abortSignal.throwIfAborted();
       const input = readTranslationInput(
         file.path,
+        file.taskId,
         translationConfigFingerprint
       );
       const parsed = input.parsed;
       const subtitle = getSubtitleCues(parsed);
+      if (input.shouldRestartTranslation) {
+        clearSubtitleCueTranslations(subtitle);
+      }
       const totalCues = subtitle.length;
       let completedCues = subtitle.filter(isSubtitleCueComplete).length;
 
@@ -1017,15 +1214,31 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       );
       outputPath = translatedOutputPath;
       let analysisData = input.analysis;
-      analysisCache.delete(file.path);
+      analysisCache.delete(file.taskId);
       const checkpointPath = input.checkpointPath;
+      const checkpointSourcePath = input.checkpointSourcePath;
+      const ownedBackupPaths = new Set<string>();
+      let pendingCheckpointSourcePath = input.shouldPreserveCheckpointSource
+        ? checkpointSourcePath
+        : undefined;
       releasePathClaims = claimTranslationPaths(
-        [translatedOutputPath, checkpointPath],
+        [...new Set([
+          translatedOutputPath,
+          checkpointPath,
+          ...(pendingCheckpointSourcePath && input.shouldClaimCheckpointSource
+            ? [pendingCheckpointSourcePath]
+            : []),
+        ])],
         batchPathClaims
       );
-      if (input.shouldBackupCheckpoint) {
+      if (pendingCheckpointSourcePath === checkpointPath) {
         abortSignal.throwIfAborted();
-        const backupPath = await backupTranslationCheckpoint(checkpointPath);
+        const backupPath = await copyTranslationCheckpointBackup(
+          checkpointPath,
+          file.taskId
+        );
+        ownedBackupPaths.add(backupPath);
+        pendingCheckpointSourcePath = undefined;
         console.warn(
           `Preserved an incompatible translation checkpoint at: ${backupPath}`
         );
@@ -1038,16 +1251,75 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
             sourceName: input.sourceName,
             format: input.sourceExtension,
             configFingerprint: translationConfigFingerprint,
+            taskId: file.taskId,
             analysis: analysisData,
             sourceFingerprint: input.sourceFingerprint,
           })
       );
+      let checkpointWarningSent = false;
+      const archiveMigratedCheckpoint = async () => {
+        if (!pendingCheckpointSourcePath) return;
+        try {
+          const backupPath = await backupTranslationCheckpoint(
+            pendingCheckpointSourcePath,
+            file.taskId
+          );
+          ownedBackupPaths.add(backupPath);
+          pendingCheckpointSourcePath = undefined;
+          console.warn(
+            `Migrated the previous translation checkpoint to: ${backupPath}`
+          );
+        } catch (error: unknown) {
+          const errorCode =
+            typeof error === "object" && error !== null && "code" in error
+              ? error.code
+              : undefined;
+          if (errorCode === "ENOENT") {
+            pendingCheckpointSourcePath = undefined;
+            return;
+          }
+          // The new v3 checkpoint is already durable. Keeping the legacy file
+          // is safe and lets a later save or successful cleanup retry removal.
+          console.warn("Failed to archive migrated translation checkpoint:", error);
+        }
+      };
       const persistCheckpoint = async () => {
         try {
           await checkpointWriter.write();
         } catch (error: unknown) {
           console.warn("Failed to write translation checkpoint:", error);
+          if (!checkpointWarningSent) {
+            checkpointWarningSent = true;
+            sendCheckpointSaveWarning(event.sender, {
+              taskId: file.taskId,
+              filePath: file.path,
+            });
+          }
+          return false;
         }
+        await archiveMigratedCheckpoint();
+        return true;
+      };
+      const removeSuccessfulCheckpointArtifacts = async () => {
+        let previousOwnedBackups: string[] = [];
+        try {
+          const checkpointDirectory = path.dirname(checkpointPath);
+          previousOwnedBackups = getOwnedTranslationCheckpointBackupPaths(
+            checkpointDirectory,
+            fs.readdirSync(checkpointDirectory),
+            input.backupOwnerTaskIds
+          );
+        } catch (error: unknown) {
+          console.warn("Failed to discover owned checkpoint backups:", error);
+        }
+        await removeTranslationCheckpointArtifacts([
+          checkpointPath,
+          ...(pendingCheckpointSourcePath
+            ? [pendingCheckpointSourcePath]
+            : []),
+          ...ownedBackupPaths,
+          ...previousOwnedBackups,
+        ]);
       };
 
       await persistCheckpoint();
@@ -1065,7 +1337,9 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         await checkpointWriter.wait().catch((error: unknown) => {
           console.warn("Failed to finish translation checkpoint:", error);
         });
+        await removeSuccessfulCheckpointArtifacts();
         sendProgress(event.sender, {
+          taskId: file.taskId,
           filePath: file.path,
           progress: 100,
           status: "done",
@@ -1075,7 +1349,6 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
           outputPath: translatedOutputPath,
           previewCues: createSubtitlePreview(subtitle, subtitle),
         });
-        await removeTranslationCheckpoint(checkpointPath);
         return;
       }
 
@@ -1088,6 +1361,7 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       if (shouldAnalyze) {
         abortSignal.throwIfAborted();
         sendProgress(event.sender, {
+          taskId: file.taskId,
           filePath: file.path,
           progress: totalCues > 0 ? (completedCues / totalCues) * 100 : 0,
           status: "analyzing",
@@ -1103,7 +1377,7 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         combinedAdditional = `${
           combinedAdditional ? combinedAdditional + "\n\n" : ""
         }[Context]\n${analysisData}`;
-        analysisCache.set(file.path, analysisData);
+        analysisCache.set(file.taskId, analysisData);
       } else if (shouldAnalyze) {
         try {
           const analysis = await retryTranslate(
@@ -1127,9 +1401,10 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
             }[Context]\n${analysis}`;
 
             analysisData = analysis;
-            analysisCache.set(file.path, analysis);
+            analysisCache.set(file.taskId, analysis);
             await persistCheckpoint();
             sendProgress(event.sender, {
+              taskId: file.taskId,
               filePath: file.path,
               progress: totalCues > 0 ? (completedCues / totalCues) * 100 : 0,
               status: "analyzing",
@@ -1150,6 +1425,7 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
 
       abortSignal.throwIfAborted();
       sendProgress(event.sender, {
+        taskId: file.taskId,
         filePath: file.path,
         progress: totalCues > 0 ? (completedCues / totalCues) * 100 : 0,
         status: "translating",
@@ -1236,6 +1512,7 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         const progress = totalCues > 0 ? (completedCues / totalCues) * 100 : 100;
         const currentCue = Math.min(completedCues, totalCues);
         sendProgress(event.sender, {
+          taskId: file.taskId,
           filePath: file.path,
           progress,
           status: "translating",
@@ -1294,7 +1571,9 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       await checkpointWriter.wait().catch((error: unknown) => {
         console.warn("Failed to finish translation checkpoint:", error);
       });
+      await removeSuccessfulCheckpointArtifacts();
       sendProgress(event.sender, {
+        taskId: file.taskId,
         filePath: file.path,
         progress: 100,
         status: "done",
@@ -1304,12 +1583,12 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         outputPath: translatedOutputPath,
         previewCues: createSubtitlePreview(subtitle, subtitle),
       });
-      await removeTranslationCheckpoint(checkpointPath);
       console.log(`Saved translated file to: ${translatedOutputPath}`);
     } catch (e: unknown) {
       if (abortSignal.aborted) return;
       console.error(`Batch translation error for ${file.path}:`, e);
       sendProgress(event.sender, {
+        taskId: file.taskId,
         filePath: file.path,
         progress: 0,
         status: "error",
@@ -1331,18 +1610,20 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
   return { success: true };
 });
 
-// Allow renderer to fetch cached analysis for a file (in case progress event missed)
-ipcMain.handle("get-analysis", async (event, filePath: unknown) => {
+// Allow renderer to fetch cached analysis for a task (in case progress event missed)
+ipcMain.handle("get-analysis", async (event, taskId: unknown) => {
   assertTrustedSender(event);
-  const validatedPath = z.string().min(1).parse(filePath);
-  return analysisCache.get(validatedPath) ?? null;
+  if (!isTranslationTaskId(taskId)) {
+    throw new Error("Invalid translation task ID");
+  }
+  return analysisCache.get(taskId) ?? null;
 });
 
 ipcMain.handle("get-subtitle-preview", async (event, request: unknown) => {
   assertTrustedSender(event);
-  const { filePath: validatedPath, outputPath } =
+  const { taskId, filePath: validatedPath, outputPath } =
     subtitlePreviewRequestSchema.parse(request);
-  const input = readTranslationInput(validatedPath);
+  const input = readTranslationInput(validatedPath, taskId);
   const requestedOutputExtension = outputPath
     ? path.extname(outputPath).slice(1).toLowerCase()
     : undefined;
@@ -1359,17 +1640,15 @@ ipcMain.handle("get-subtitle-preview", async (event, request: unknown) => {
     return { cues: createSubtitlePreview(subtitle, subtitle) };
   }
 
-  const checkpointPath = getTranslationCachePath(
-    validatedPath,
-    input.sourceName
-  );
+  const checkpointPath = input.checkpointPath;
   let translatedSubtitle: SubtitleCue[] | undefined;
   const matchingCheckpoint = input.sourceFingerprint
     ? readMatchingCheckpoint(
         checkpointPath,
         input.sourceName,
         input.sourceExtension,
-        input.sourceFingerprint
+        input.sourceFingerprint,
+        taskId
       )
     : undefined;
   if (matchingCheckpoint) {

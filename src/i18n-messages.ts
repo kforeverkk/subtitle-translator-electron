@@ -241,4 +241,5 @@ export const messages = {
   "toast.unknownError": defineMessage({ id: "toast.unknownError", message: "Unknown error" }),
   "toast.tasksAdded": defineMessage({ id: "toast.tasksAdded", message: "Added {count} task(s) and started translation" }),
   "toast.nativeMenuSyncFailed": defineMessage({ id: "toast.nativeMenuSyncFailed", message: "The interface language changed, but the native menu could not be updated. It will update the next time the app starts." }),
+  "toast.checkpointSaveFailed": defineMessage({ id: "toast.checkpointSaveFailed", message: "Translation is continuing, but recovery progress could not be saved temporarily for {file}. If the app closes before a later save succeeds, it will resume from the last valid checkpoint." }),
 } satisfies Record<string, MessageDescriptor>;
