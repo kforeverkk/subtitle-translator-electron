@@ -24,7 +24,6 @@ import type {
   SubtitleFile,
   SubtitleOutputFormat,
 } from "@/types/electron-api";
-import { translationErrorCodes } from "@/types/electron-api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -102,6 +101,7 @@ import {
 import { cn } from "@/lib/utils";
 import MarkdownContent from "@/components/MarkdownContent";
 import FontPicker from "@/components/FontPicker";
+import { getLocalizedTranslationError } from "@/utils/translation-error";
 
 type ModelLoadStatus = "idle" | "loading" | "success" | "error";
 type PreviewLoadStatus = "idle" | "loading" | "success" | "error";
@@ -120,31 +120,7 @@ function normalizeContextSize(value: unknown): number {
   return Math.min(MAX_CONTEXT_SIZE, Math.max(0, Math.round(numericValue)));
 }
 
-type Translate = (id: string, values?: Record<string, unknown>) => string;
-
-const translationErrorMessageIds: Record<string, string> = {
-  [translationErrorCodes.unsupportedInputFile]: "error.unsupportedInputFile",
-  [translationErrorCodes.inputPathNotFile]: "error.inputPathNotFile",
-  [translationErrorCodes.unsupportedSubtitleFormat]: "error.unsupportedSubtitleFormat",
-  [translationErrorCodes.invalidCheckpoint]: "error.invalidCheckpoint",
-  [translationErrorCodes.incompatibleCheckpoint]: "error.incompatibleCheckpoint",
-  [translationErrorCodes.noValidApiKeys]: "error.noValidApiKeys",
-  [translationErrorCodes.unsupportedFileExtension]: "error.unsupportedFileExtension",
-  [translationErrorCodes.outputPathConflict]: "error.outputPathConflict",
-  [translationErrorCodes.repetitiveModelOutput]: "error.repetitiveModelOutput",
-  [translationErrorCodes.incompleteModelOutput]: "error.incompleteModelOutput",
-};
-
-function getLocalizedError(error: unknown, fallbackId: string, t: Translate): string {
-  const message =
-    error instanceof Error
-      ? error.message
-      : typeof error === "string"
-        ? error
-        : "";
-  const messageId = translationErrorMessageIds[message];
-  return messageId ? t(messageId) : message || t(fallbackId);
-}
+const getLocalizedError = getLocalizedTranslationError;
 
 function getStatusVariant(status: BatchProgress["status"]) {
   if (status === "error") return "destructive" as const;

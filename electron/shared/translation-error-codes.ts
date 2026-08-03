@@ -9,4 +9,5 @@ export const translationErrorCodes = {
   outputPathConflict: "ERR_TRANSLATION_OUTPUT_PATH_CONFLICT",
   repetitiveModelOutput: "ERR_REPETITIVE_MODEL_OUTPUT",
   incompleteModelOutput: "ERR_INCOMPLETE_MODEL_OUTPUT",
+  ssaToAssConversion: "ERR_SSA_TO_ASS_CONVERSION",
 } as const;
