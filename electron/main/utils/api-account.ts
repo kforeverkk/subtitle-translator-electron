@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { translationErrorCodes } from "../../shared/translation-error-codes.ts";
+import { translationErrorCodes } from "../../shared/translation-error-codes";
 
 export function getFirstValidApiKey(apiKeys: readonly string[]): string {
   const apiKey = apiKeys.map((key) => key.trim()).find(Boolean);

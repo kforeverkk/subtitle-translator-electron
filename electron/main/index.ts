@@ -41,7 +41,11 @@ import { subtitleOutputFormats } from "./utils/subtitle-output";
 import { getTranslatedPath } from "./utils/output-path";
 import { shouldAnalyzeSubtitles } from "./utils/subtitle-sampling";
 import { fetchAvailableModels } from "./utils/models";
-import { RequestRateLimiter } from "./utils/request-rate-limiter";
+import { getFirstValidApiKey } from "./utils/api-account";
+import {
+  RequestRateLimiterRegistry,
+  type RequestRateLimiterLease,
+} from "./utils/request-rate-limiter-registry";
 import { isAllowedApiHost } from "./utils/api-host";
 import {
   clearSubtitleCueTranslations,
@@ -145,6 +149,7 @@ type ApplicationLocale = z.infer<typeof applicationLocaleSchema>;
 let applicationLocale: ApplicationLocale | undefined;
 const activeTranslationPathClaims = new Set<string>();
 const activeTranslationControllers = new Map<string, Set<AbortController>>();
+const requestRateLimiterRegistry = new RequestRateLimiterRegistry();
 
 const subtitleFileSchema = z
   .object({
@@ -1130,10 +1135,6 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
     temperature: params.temperature,
     contextSize: params.contextSize ?? DEFAULT_CONTEXT_SIZE,
   });
-  const requestRateLimiter = new RequestRateLimiter({
-    requestsPerMinute: params.requestsPerMinute,
-    minimumIntervalMs: params.delay,
-  });
   if (
     files.some((file) => activeTranslationControllers.has(file.taskId))
   ) {
@@ -1148,6 +1149,19 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       registerTranslationController(file.taskId, controller)
     );
   }
+  let requestRateLimiterLease: RequestRateLimiterLease;
+  try {
+    requestRateLimiterLease = requestRateLimiterRegistry.acquire({
+      apiHost: params.apiHost,
+      apiKey: getFirstValidApiKey(params.apiKeys),
+      requestsPerMinute: params.requestsPerMinute,
+      minimumIntervalMs: params.delay,
+    });
+  } catch (error: unknown) {
+    for (const unregister of unregisterTranslationControllers) unregister();
+    throw error;
+  }
+  const requestRateLimiter = requestRateLimiterLease.limiter;
   // Keep these claims for the whole request so later files cannot silently
   // overwrite an earlier file after its active write lock has been released.
   const batchPathClaims = new Set<string>();
@@ -1606,6 +1620,7 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
     }
   } finally {
     for (const unregister of unregisterTranslationControllers) unregister();
+    requestRateLimiterLease.release();
   }
   return { success: true };
 });
