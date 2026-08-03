@@ -41,7 +41,11 @@ import {
   type SubtitleOutputFormat,
 } from "./subtitle-output";
 import { createSsaToAssConversionError } from "../../shared/ssa-to-ass-error";
-import { readSubtitleFile } from "./subtitle-encoding";
+import {
+  decodeSubtitleBuffer,
+  readSubtitleFile,
+} from "./subtitle-encoding";
+import { createSubtitleSourceFingerprint } from "./subtitle-source-identity";
 import {
   convertSsaToBilingualAss,
 } from "./ssa-to-ass";
@@ -449,6 +453,40 @@ function parseSubtitle(
     };
   }
   throw new Error(translationErrorCodes.unsupportedFileExtension);
+}
+
+export function parseSubtitleText(
+  fileContent: string,
+  fileExtension: SubtitleFileExtension
+): ParsedSubtitle {
+  return parseSubtitle(fileContent, fileExtension);
+}
+
+export function readSubtitleSourceSnapshot(
+  filePath: string,
+  extension: SubtitleFileExtension,
+  metadata: { size: number; mtimeMs: number },
+  options: { readFile?: (filePath: string) => Buffer } = {}
+): {
+  parsed: ParsedSubtitle;
+  text: string;
+  encoding: string;
+  fingerprint: TranslationSourceFingerprint;
+} {
+  const buffer = (options.readFile ?? fs.readFileSync)(filePath);
+  const decoded = decodeSubtitleBuffer(buffer);
+  const parsed = parseSubtitleText(decoded.text, extension);
+  return {
+    parsed,
+    text: decoded.text,
+    encoding: decoded.encoding,
+    fingerprint: createSubtitleSourceFingerprint(
+      buffer,
+      parsed,
+      extension,
+      metadata
+    ),
+  };
 }
 
 function parseSubtitleFile(

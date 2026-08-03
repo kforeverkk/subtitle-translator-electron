@@ -29,8 +29,8 @@ import {
 import {
   createTranslationCacheDocument,
   parseSubtitle,
-  parseSubtitleFile,
   parseTranslationCache,
+  readSubtitleSourceSnapshot,
   translateSubtitleChunk,
   saveTranslated,
   analyzeSubtitlesForContext,
@@ -38,7 +38,10 @@ import {
   getSubtitleCues,
   validateSubtitleOutputCompatibility,
 } from "./utils/translate";
-import { readSubtitleFile } from "./utils/subtitle-encoding";
+import {
+  hasMatchingCheckpointSource,
+  type CurrentSubtitleSourceIdentity,
+} from "./utils/subtitle-source-identity";
 import { createSubtitlePreview } from "./utils/subtitle-preview";
 import { normalizeAssFontName } from "./utils/ass-bilingual";
 import { subtitleOutputFormats } from "./utils/subtitle-output";
@@ -71,7 +74,6 @@ import {
   getTaskTranslationCheckpointPath,
   getTranslationCheckpointCandidates,
   getTranslationCheckpointResumeMetadata,
-  hasMatchingCheckpointSource,
   hasMatchingTranslationConfig,
   hasMatchingTranslationTask,
   isTranslationTaskId,
@@ -370,28 +372,6 @@ interface TranslationInput {
   backupOwnerTaskIds: string[];
 }
 
-function attachCurrentSsaSource(
-  parsed: ParsedSubtitle,
-  filePath: string,
-  sourceExtension: SubtitleFileExtension
-): ParsedSubtitle {
-  if (
-    sourceExtension !== "ssa" ||
-    Array.isArray(parsed) ||
-    parsed.source?.format === "ssa" ||
-    path.extname(filePath).toLowerCase() !== ".ssa"
-  ) {
-    return parsed;
-  }
-  return {
-    ...parsed,
-    source: {
-      format: "ssa",
-      text: readSubtitleFile(filePath).text,
-    },
-  };
-}
-
 function readCheckpoint(
   checkpointPath: string
 ): TranslationCacheDocument | undefined {
@@ -414,19 +394,12 @@ function readCheckpoint(
 
 function readMatchingCheckpoint(
   checkpointPath: string,
-  sourceName: string,
-  sourceExtension: SubtitleFileExtension,
-  sourceFingerprint: TranslationSourceFingerprint,
+  sourceIdentity: CurrentSubtitleSourceIdentity,
   expectedTaskId?: string
 ): TranslationCacheDocument | undefined {
   const checkpoint = readCheckpoint(checkpointPath);
   return checkpoint &&
-    hasMatchingCheckpointSource(
-      checkpoint,
-      sourceName,
-      sourceExtension,
-      sourceFingerprint
-    ) &&
+    hasMatchingCheckpointSource(checkpoint, sourceIdentity) &&
     (!expectedTaskId || hasMatchingTranslationTask(checkpoint, expectedTaskId))
     ? checkpoint
     : undefined;
@@ -434,28 +407,11 @@ function readMatchingCheckpoint(
 
 function readCompatibleLegacyCheckpoint(
   checkpointPath: string,
-  sourceName: string,
-  sourceExtension: SubtitleFileExtension,
-  sourceFingerprint: TranslationSourceFingerprint
+  sourceIdentity: CurrentSubtitleSourceIdentity
 ): TranslationCacheDocument | undefined {
   const checkpoint = readCheckpoint(checkpointPath);
   if (!checkpoint) return undefined;
-  if (
-    hasMatchingCheckpointSource(
-      checkpoint,
-      sourceName,
-      sourceExtension,
-      sourceFingerprint
-    )
-  ) {
-    return checkpoint;
-  }
-
-  // v1 did not record a reliable source/config identity. It can still be read
-  // for preview/import; batch resume rejects it because its config cannot match.
-  return checkpoint.version === 1 &&
-    path.basename(checkpoint.source.name) === sourceName &&
-    checkpoint.format === sourceExtension
+  return hasMatchingCheckpointSource(checkpoint, sourceIdentity)
     ? checkpoint
     : undefined;
 }
@@ -463,8 +419,7 @@ function readCompatibleLegacyCheckpoint(
 function findMatchingTaskCheckpoint(
   filePath: string,
   sourceName: string,
-  sourceExtension: SubtitleFileExtension,
-  sourceFingerprint: TranslationSourceFingerprint,
+  sourceIdentity: CurrentSubtitleSourceIdentity,
   configFingerprint: string,
   targetCheckpointPath: string
 ): { path: string; checkpoint: TranslationCacheDocument } | undefined {
@@ -493,9 +448,7 @@ function findMatchingTaskCheckpoint(
   for (const candidate of candidates) {
     const checkpoint = readMatchingCheckpoint(
       candidate.path,
-      sourceName,
-      sourceExtension,
-      sourceFingerprint
+      sourceIdentity
     );
     if (
       checkpoint?.version === 3 &&
@@ -549,9 +502,16 @@ function readTranslationInput(
 
   const sourceName = path.basename(filePath);
   const sourceExtension = extension as SubtitleFileExtension;
-  const sourceFingerprint = {
-    size: fileInfo.size,
-    mtimeMs: fileInfo.mtimeMs,
+  const sourceSnapshot = readSubtitleSourceSnapshot(
+    filePath,
+    sourceExtension,
+    { size: fileInfo.size, mtimeMs: fileInfo.mtimeMs }
+  );
+  const sourceFingerprint = sourceSnapshot.fingerprint;
+  const sourceIdentity: CurrentSubtitleSourceIdentity = {
+    sourceName,
+    format: sourceExtension,
+    fingerprint: sourceFingerprint,
   };
   const checkpointPath = getTaskTranslationCheckpointPath(
     filePath,
@@ -561,9 +521,7 @@ function readTranslationInput(
   const exactCheckpointExists = fs.existsSync(checkpointPath);
   const exactCheckpoint = readMatchingCheckpoint(
     checkpointPath,
-    sourceName,
-    sourceExtension,
-    sourceFingerprint,
+    sourceIdentity,
     taskId
   );
   if (exactCheckpoint) {
@@ -589,7 +547,7 @@ function readTranslationInput(
 
   if (exactCheckpointExists) {
     return {
-      parsed: parseSubtitleFile(filePath, sourceExtension),
+      parsed: sourceSnapshot.parsed,
       sourceName,
       sourceExtension,
       sourceFingerprint,
@@ -612,9 +570,7 @@ function readTranslationInput(
   )) {
     const checkpoint = readCompatibleLegacyCheckpoint(
       legacyPath,
-      sourceName,
-      sourceExtension,
-      sourceFingerprint
+      sourceIdentity
     );
     const resumeMetadata = checkpoint
       ? getTranslationCheckpointResumeMetadata(checkpoint, configFingerprint)
@@ -636,8 +592,7 @@ function readTranslationInput(
     selectedCheckpoint = findMatchingTaskCheckpoint(
       filePath,
       sourceName,
-      sourceExtension,
-      sourceFingerprint,
+      sourceIdentity,
       configFingerprint,
       checkpointPath
     );
@@ -672,7 +627,7 @@ function readTranslationInput(
       // v1 cannot prove that its cues still belong to the current source. Use
       // the current subtitle for a clean task and archive v1 only after v3 is
       // durable, so no stale text can leak into the new translation.
-      parsed: parseSubtitleFile(filePath, sourceExtension),
+      parsed: sourceSnapshot.parsed,
       sourceName,
       sourceExtension,
       sourceFingerprint,
@@ -688,7 +643,7 @@ function readTranslationInput(
   }
 
   return {
-    parsed: parseSubtitleFile(filePath, sourceExtension),
+    parsed: sourceSnapshot.parsed,
     sourceName,
     sourceExtension,
     sourceFingerprint,
@@ -1208,12 +1163,7 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         file.taskId,
         translationConfigFingerprint
       );
-      const parsed = attachCurrentSsaSource(
-        input.parsed,
-        file.path,
-        input.sourceExtension
-      );
-      input.parsed = parsed;
+      const parsed = input.parsed;
       const subtitle = getSubtitleCues(parsed);
       if (input.shouldRestartTranslation) {
         clearSubtitleCueTranslations(subtitle);
@@ -1705,9 +1655,11 @@ ipcMain.handle("get-subtitle-preview", async (event, request: unknown) => {
   const matchingCheckpoint = input.sourceFingerprint
     ? readMatchingCheckpoint(
         checkpointPath,
-        input.sourceName,
-        input.sourceExtension,
-        input.sourceFingerprint,
+        {
+          sourceName: input.sourceName,
+          format: input.sourceExtension,
+          fingerprint: input.sourceFingerprint,
+        },
         taskId
       )
     : undefined;

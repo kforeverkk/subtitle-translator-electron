@@ -227,21 +227,6 @@ export function createTranslationConfigFingerprint(
   return createHash("sha256").update(JSON.stringify(stableConfig)).digest("hex");
 }
 
-export function hasMatchingCheckpointSource(
-  checkpoint: CheckpointIdentity,
-  sourceName: string,
-  sourceExtension: string,
-  sourceFingerprint: TranslationSourceFingerprint
-): boolean {
-  const checkpointFingerprint = checkpoint.source.fingerprint;
-  return (
-    checkpoint.source.name === sourceName &&
-    checkpoint.format === sourceExtension &&
-    checkpointFingerprint?.size === sourceFingerprint.size &&
-    checkpointFingerprint.mtimeMs === sourceFingerprint.mtimeMs
-  );
-}
-
 export function hasMatchingTranslationConfig(
   checkpoint: CheckpointIdentity,
   configFingerprint: string

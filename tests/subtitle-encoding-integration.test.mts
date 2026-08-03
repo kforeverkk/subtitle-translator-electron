@@ -3,10 +3,12 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import iconv from "iconv-lite";
 import {
   getSubtitleCues,
   parseSubtitleFile,
+  readSubtitleSourceSnapshot,
   saveTranslated,
   type SubtitleFileExtension,
 } from "../electron/main/utils/translate.ts";
@@ -130,4 +132,47 @@ test("writes translated output from a legacy source as strict UTF-8", () => {
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
+});
+
+test("reads, decodes, parses, and fingerprints one immutable source buffer", () => {
+  const sentence = "简体中文字幕测试，这是一段用于识别编码的长文本。";
+  const cueText = Array.from({ length: 20 }, () => sentence).join(" ");
+  const sourceText = createSrt(cueText);
+  const gb18030 = iconv.encode(sourceText, "gb18030");
+  const utf8 = Buffer.from(sourceText, "utf8");
+  let reads = 0;
+
+  const legacySnapshot = readSubtitleSourceSnapshot(
+    "ignored.srt",
+    "srt",
+    { size: gb18030.length, mtimeMs: 100 },
+    {
+      readFile: () => {
+        reads += 1;
+        return gb18030;
+      },
+    }
+  );
+  const utf8Snapshot = readSubtitleSourceSnapshot(
+    "ignored.srt",
+    "srt",
+    { size: utf8.length, mtimeMs: 200 },
+    { readFile: () => utf8 }
+  );
+
+  assert.equal(reads, 1);
+  assert.match(getSubtitleCues(legacySnapshot.parsed)[0].data.text, /简体中文/);
+  assert.equal(legacySnapshot.encoding, "gb18030");
+  assert.equal(
+    legacySnapshot.fingerprint.rawHash,
+    createHash("sha256").update(gb18030).digest("hex")
+  );
+  assert.notEqual(
+    legacySnapshot.fingerprint.rawHash,
+    utf8Snapshot.fingerprint.rawHash
+  );
+  assert.equal(
+    legacySnapshot.fingerprint.contentHash,
+    utf8Snapshot.fingerprint.contentHash
+  );
 });

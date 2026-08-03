@@ -20,7 +20,6 @@ import {
   getTaskTranslationCheckpointPath,
   getTranslationCheckpointCandidates,
   getTranslationCheckpointResumeMetadata,
-  hasMatchingCheckpointSource,
   hasMatchingTranslationConfig,
   hasMatchingTranslationTask,
   isTranslationTaskId,
@@ -49,50 +48,6 @@ async function createCheckpointTestDirectory(
   context.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
-
-test("resumes only when name, format, size, and modification time match", () => {
-  const checkpoint = {
-    format: "srt",
-    source: { name: "episode.srt", fingerprint },
-  };
-
-  assert.equal(
-    hasMatchingCheckpointSource(
-      checkpoint,
-      "episode.srt",
-      "srt",
-      fingerprint
-    ),
-    true
-  );
-  assert.equal(
-    hasMatchingCheckpointSource(checkpoint, "renamed.srt", "srt", fingerprint),
-    false
-  );
-  assert.equal(
-    hasMatchingCheckpointSource(checkpoint, "episode.srt", "vtt", fingerprint),
-    false
-  );
-  assert.equal(
-    hasMatchingCheckpointSource(checkpoint, "episode.srt", "srt", {
-      ...fingerprint,
-      size: fingerprint.size + 1,
-    }),
-    false
-  );
-});
-
-test("does not auto-resume legacy checkpoints without a fingerprint", () => {
-  assert.equal(
-    hasMatchingCheckpointSource(
-      { format: "srt", source: { name: "episode.srt" } },
-      "episode.srt",
-      "srt",
-      fingerprint
-    ),
-    false
-  );
-});
 
 test("accepts complete source hashes and rejects partial or malformed hash metadata", () => {
   const validDocument = {
