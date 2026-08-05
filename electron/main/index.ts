@@ -11,16 +11,13 @@ import {
   type WebContents,
 } from "electron";
 import { translationErrorCodes } from "../shared/translation-error-codes";
-import { parseSsaToAssConversionError } from "../shared/ssa-to-ass-error";
 import { release } from "node:os";
 import { join } from "node:path";
 import fs, { type Stats } from "node:fs";
 import path from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import pool from "tiny-async-pool";
 import { z } from "zod";
-import { APICallError, NoObjectGeneratedError } from "ai";
 import {
   type BatchProgress,
   type BatchTranslationRequest,
@@ -55,11 +52,14 @@ import {
 } from "./utils/request-rate-limiter-registry";
 import { isAllowedApiHost } from "./utils/api-host";
 import {
+  getErrorMessage,
+  retryTranslation,
+} from "./utils/translation-retry";
+import {
   clearSubtitleCueTranslations,
   isSubtitleCueComplete,
   splitIntoChunk,
 } from "./utils/subtitle-chunks";
-import { getRetryAfterMsFromHeaders } from "./utils/retry-after";
 import {
   getPathClaimKey,
   hasPathClaimConflict,
@@ -147,7 +147,6 @@ const allowedExternalHosts = new Set([
   "www.github.com",
   "www.buymeacoffee.com",
 ]);
-const MAX_AUTOMATIC_TRANSLATION_ATTEMPTS = 3;
 const MIN_CUES_FOR_CONTEXT_ANALYSIS = 40;
 const DEFAULT_CONTEXT_SIZE = 5;
 const applicationLocaleSchema = z.enum(["en-US", "zh-TW", "zh-CN"]);
@@ -652,82 +651,6 @@ function readTranslationInput(
   };
 }
 
-function getErrorDetails(error: unknown): {
-  message: string;
-  name?: string;
-  status?: number;
-} {
-  const errorRecord =
-    typeof error === "object" && error !== null
-      ? (error as Record<string, unknown>)
-      : {};
-  const cause =
-    typeof errorRecord.cause === "object" && errorRecord.cause !== null
-      ? (errorRecord.cause as Record<string, unknown>)
-      : {};
-  const messages = [
-    error instanceof Error ? error.message : undefined,
-    typeof error === "string" ? error : undefined,
-    typeof errorRecord.message === "string" ? errorRecord.message : undefined,
-    typeof cause.message === "string" ? cause.message : undefined,
-  ].filter((message): message is string => Boolean(message));
-  const structuredConversionMessage = messages.find((message) =>
-    Boolean(parseSsaToAssConversionError(message))
-  );
-  const response =
-    typeof errorRecord.response === "object" && errorRecord.response !== null
-      ? (errorRecord.response as Record<string, unknown>)
-      : {};
-
-  return {
-    message:
-      structuredConversionMessage ??
-      ([...new Set(messages)].join(" | ") || "Unknown error"),
-    name:
-      typeof errorRecord.name === "string"
-        ? errorRecord.name
-        : typeof cause.name === "string"
-          ? cause.name
-          : undefined,
-    status:
-      typeof errorRecord.statusCode === "number"
-        ? errorRecord.statusCode
-        : typeof errorRecord.status === "number"
-        ? errorRecord.status
-        : typeof response.status === "number"
-          ? response.status
-          : typeof cause.status === "number"
-            ? cause.status
-            : undefined,
-  };
-}
-
-function getRetryAfterMs(error: unknown): number {
-  if (!APICallError.isInstance(error) || !error.responseHeaders) return 0;
-  return getRetryAfterMsFromHeaders(error.responseHeaders);
-}
-
-function isRetryableTranslationError(error: unknown): boolean {
-  if (APICallError.isInstance(error)) return error.isRetryable;
-  if (NoObjectGeneratedError.isInstance(error)) return true;
-
-  const { message, status } = getErrorDetails(error);
-  if (status === 429 || (typeof status === "number" && status >= 500)) {
-    return true;
-  }
-
-  return (
-    message.includes(translationErrorCodes.incompleteModelOutput) ||
-    /network|timeout|timed out|econnreset|econnrefused|enotfound|socket hang up/i.test(
-      message
-    )
-  );
-}
-
-function getErrorMessage(error: unknown): string {
-  return getErrorDetails(error).message;
-}
-
 function sendProgress(sender: WebContents, progress: BatchProgress): void {
   sender.send("batch-progress", progress);
 }
@@ -1064,42 +987,6 @@ ipcMain.handle("list-models", async (event, request: unknown) => {
   return fetchAvailableModels({ apiKey, apiHost });
 });
 
-async function retryTranslate<TInput, TResult>(
-  fn: (input: TInput) => Promise<TResult>,
-  input: TInput,
-  delay = 1000,
-  abortSignal?: AbortSignal
-): Promise<TResult> {
-  for (
-    let attempt = 1;
-    attempt <= MAX_AUTOMATIC_TRANSLATION_ATTEMPTS;
-    attempt++
-  ) {
-    abortSignal?.throwIfAborted();
-    try {
-      return await fn(input);
-    } catch (error: unknown) {
-      if (abortSignal?.aborted) throw error;
-      if (attempt === MAX_AUTOMATIC_TRANSLATION_ATTEMPTS) {
-        throw error;
-      }
-      if (!isRetryableTranslationError(error)) throw error;
-
-      const { message: errorMessage, name } = getErrorDetails(error);
-      const exponentialBackoff =
-        Math.max(0, delay) * 2 ** (attempt - 1) +
-        Math.floor(Math.random() * 250);
-      const backoff = Math.max(exponentialBackoff, getRetryAfterMs(error));
-      console.warn(
-        `Translation attempt ${attempt} failed: ${errorMessage || name || "unknown error"}. Retrying in ${backoff}ms...`
-      );
-      await sleep(backoff, undefined, { signal: abortSignal });
-    }
-  }
-
-  throw new Error("Automatic translation retry loop exited unexpectedly");
-}
-
 ipcMain.on("cancel-translation", (event, taskId: unknown) => {
   if (!isTrustedSender(event.senderFrame)) return;
   if (!isTranslationTaskId(taskId)) return;
@@ -1183,7 +1070,7 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         .filter((text: string) => text && text.length > 0);
       let detectedSourceLanguage = "";
       try {
-        detectedSourceLanguage = await retryTranslate(
+        detectedSourceLanguage = await retryTranslation(
           (texts) =>
             detectSubtitleLanguage(texts, {
               apiKeys: params.apiKeys,
@@ -1193,8 +1080,10 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
               abortSignal,
             }),
           allTexts,
-          params.delay,
-          abortSignal
+          {
+            delayMs: params.delay,
+            abortSignal,
+          }
         );
       } catch (languageDetectionError) {
         abortSignal.throwIfAborted();
@@ -1384,7 +1273,7 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         analysisCache.set(file.taskId, analysisData);
       } else if (shouldAnalyze) {
         try {
-          const analysis = await retryTranslate(
+          const analysis = await retryTranslation(
             (texts) =>
               analyzeSubtitlesForContext(texts, {
                 apiKeys: params.apiKeys || [],
@@ -1396,8 +1285,10 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
                 abortSignal,
               }),
             allTexts,
-            params.delay,
-            abortSignal
+            {
+              delayMs: params.delay,
+              abortSignal,
+            }
           );
           if (analysis) {
             combinedAdditional = `${
@@ -1472,7 +1363,7 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         };
 
         // 每個區塊最多自動嘗試三次；失敗後直接交由使用者手動重試。
-        const translatedWindow = await retryTranslate(
+        const translatedWindow = await retryTranslation(
           async (chunkInput) => {
             const result = await translateSubtitleChunk(chunkInput, {
               ...params,
@@ -1499,8 +1390,10 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
             return result;
           },
           translationChunk,
-          1000,
-          abortSignal
+          {
+            delayMs: 1000,
+            abortSignal,
+          }
         );
 
         abortSignal.throwIfAborted();

@@ -1,4 +1,9 @@
-import { test, expect, _electron as electron } from "@playwright/test";
+import {
+  test,
+  expect,
+  _electron as electron,
+  type Page,
+} from "@playwright/test";
 import { createHash } from "node:crypto";
 import {
   mkdtempSync,
@@ -109,6 +114,15 @@ function createAssCheckpointSubtitle(
 async function startMockOpenAiServer(options: {
   streamDelayMs?: number | ((requestBodyText: string) => number);
   getStreamElements?: (requestBodyText: string) => string[];
+  getStreamResponse?: (
+    requestBodyText: string,
+    requestNumber: number
+  ) => {
+    status?: number;
+    empty?: boolean;
+    elements?: string[];
+    errorMessage?: string;
+  };
   onRequest?: (request: {
     startedAt: number;
     authorization?: string;
@@ -118,6 +132,7 @@ async function startMockOpenAiServer(options: {
   apiHost: string;
   close: () => Promise<void>;
 }> {
+  let streamRequestCount = 0;
   const server = createServer((request, response) => {
     void (async () => {
       if (request.url === "/v1/models") {
@@ -147,6 +162,27 @@ async function startMockOpenAiServer(options: {
         });
         const created = Math.floor(Date.now() / 1_000);
         if (requestBody.stream) {
+          streamRequestCount++;
+          const streamResponse = options.getStreamResponse?.(
+            requestBodyText,
+            streamRequestCount
+          );
+          if (streamResponse?.status) {
+            response.statusCode = streamResponse.status;
+            response.setHeader("Content-Type", "application/json");
+            response.end(
+              JSON.stringify({
+                error: {
+                  message:
+                    streamResponse.errorMessage ??
+                    `Mock HTTP ${streamResponse.status}`,
+                  type: "mock_error",
+                },
+              })
+            );
+            return;
+          }
+
           const streamDelayMs =
             typeof options.streamDelayMs === "function"
               ? options.streamDelayMs(requestBodyText)
@@ -155,6 +191,11 @@ async function startMockOpenAiServer(options: {
             await wait(streamDelayMs);
           }
           response.setHeader("Content-Type", "text/event-stream");
+          if (streamResponse?.empty) {
+            response.end();
+            return;
+          }
+
           response.write(
             `data: ${JSON.stringify({
               id: "chatcmpl-stream-test",
@@ -168,6 +209,7 @@ async function startMockOpenAiServer(options: {
                     role: "assistant",
                     content: JSON.stringify({
                       elements:
+                        streamResponse?.elements ??
                         options.getStreamElements?.(requestBodyText) ??
                         ["Fresh translation"],
                     }),
@@ -252,6 +294,63 @@ async function startMockOpenAiServer(options: {
         server.closeAllConnections();
       }),
   };
+}
+
+async function runSingleSubtitleTranslation(
+  page: Page,
+  {
+    apiHost,
+    sourcePath,
+    taskId,
+  }: {
+    apiHost: string;
+    sourcePath: string;
+    taskId: string;
+  }
+): Promise<{
+  status: string;
+  error?: string;
+  outputPath?: string;
+}> {
+  return page.evaluate(
+    ({ apiHost, sourcePath, taskId }) =>
+      new Promise<{
+        status: string;
+        error?: string;
+        outputPath?: string;
+      }>((resolve, reject) => {
+        const removeListener = window.electronAPI.onBatchProgress((update) => {
+          if (
+            update.taskId === taskId &&
+            (update.status === "done" || update.status === "error")
+          ) {
+            removeListener();
+            resolve(update);
+          }
+        });
+        window.electronAPI
+          .translateBatch({
+            files: [{ taskId, path: sourcePath, name: "movie.srt" }],
+            params: {
+              apiKeys: ["test-key"],
+              apiHost,
+              model: "test-model",
+              prompt: "Translate every cue to {{lang}}. {{additional}}",
+              lang: "English",
+              additional: "",
+              temperature: 1,
+              outputFormat: "srt-translation",
+              assFonts: { translationFont: "", originalFont: "" },
+              concurrency: 1,
+              delay: 0,
+              requestsPerMinute: 1_000,
+              contextSize: 5,
+            },
+          })
+          .catch(reject);
+      }),
+    { apiHost, sourcePath, taskId }
+  );
 }
 
 test("homepage has title and links to intro page", async () => {
@@ -726,6 +825,148 @@ test("a single zero-delay batch keeps its API count and throughput", async () =>
     expect(
       readFileSync(path.join(temporaryDirectory, "single-source.en.srt"), "utf8")
     ).toContain("Hello");
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("an empty stream retries twice and succeeds on the third translation request", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-empty-stream-success-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "movie.srt");
+  const taskId = "12121212-1212-4212-8212-121212121212";
+  writeFileSync(
+    sourcePath,
+    "1\n00:00:00,000 --> 00:00:01,000\n你好\n",
+    "utf8"
+  );
+  let streamRequests = 0;
+  const mockServer = await startMockOpenAiServer({
+    onRequest: ({ bodyText }) => {
+      if (JSON.parse(bodyText).stream === true) streamRequests++;
+    },
+    getStreamResponse: (_bodyText, requestNumber) =>
+      requestNumber < 3
+        ? { empty: true }
+        : { elements: ["Recovered translation"] },
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    const progress = await runSingleSubtitleTranslation(page, {
+      apiHost: mockServer.apiHost,
+      sourcePath,
+      taskId,
+    });
+
+    expect(progress.status, progress.error).toBe("done");
+    expect(streamRequests).toBe(3);
+    expect(
+      readFileSync(path.join(temporaryDirectory, "movie.en.srt"), "utf8")
+    ).toContain("Recovered translation");
+    expect(
+      readdirSync(temporaryDirectory).filter(
+        (name) =>
+          name.includes(".translation.") || name.endsWith(".backup.json")
+      )
+    ).toEqual([]);
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("three empty streams fail only after the third request and keep the checkpoint", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-empty-stream-failure-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "movie.srt");
+  const taskId = "13131313-1313-4313-8313-131313131313";
+  const checkpointPath = path.join(
+    temporaryDirectory,
+    `movie.translation.${taskId.replaceAll("-", "")}.json`
+  );
+  writeFileSync(
+    sourcePath,
+    "1\n00:00:00,000 --> 00:00:01,000\n你好\n",
+    "utf8"
+  );
+  let streamRequests = 0;
+  const mockServer = await startMockOpenAiServer({
+    onRequest: ({ bodyText }) => {
+      if (JSON.parse(bodyText).stream === true) streamRequests++;
+    },
+    getStreamResponse: () => ({ empty: true }),
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    const progress = await runSingleSubtitleTranslation(page, {
+      apiHost: mockServer.apiHost,
+      sourcePath,
+      taskId,
+    });
+
+    expect(progress.status).toBe("error");
+    expect(progress.error).toBe("ERR_INCOMPLETE_MODEL_OUTPUT");
+    expect(streamRequests).toBe(3);
+    expect(
+      (
+        JSON.parse(readFileSync(checkpointPath, "utf8")) as {
+          task?: { id?: string };
+        }
+      ).task?.id
+    ).toBe(taskId);
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("an HTTP 401 translation response is not retried like an empty stream", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-empty-stream-401-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "movie.srt");
+  const taskId = "14141414-1414-4414-8414-141414141414";
+  writeFileSync(
+    sourcePath,
+    "1\n00:00:00,000 --> 00:00:01,000\n你好\n",
+    "utf8"
+  );
+  let streamRequests = 0;
+  const mockServer = await startMockOpenAiServer({
+    onRequest: ({ bodyText }) => {
+      if (JSON.parse(bodyText).stream === true) streamRequests++;
+    },
+    getStreamResponse: () => ({
+      status: 401,
+      errorMessage: "Invalid API key",
+    }),
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    const progress = await runSingleSubtitleTranslation(page, {
+      apiHost: mockServer.apiHost,
+      sourcePath,
+      taskId,
+    });
+
+    expect(progress.status).toBe("error");
+    expect(progress.error).toContain("Invalid API key");
+    expect(streamRequests).toBe(1);
   } finally {
     await app?.close();
     await mockServer.close();

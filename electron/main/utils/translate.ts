@@ -3,7 +3,13 @@ import path from "node:path";
 import { parseSync, stringifySync, type NodeList } from "subtitle";
 import assParser from "ass-parser";
 import assStringify from "ass-stringify";
-import { generateText, Output, streamText } from "ai";
+import {
+  APICallError,
+  generateText,
+  NoOutputGeneratedError,
+  Output,
+  streamText,
+} from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { z } from "zod";
 import { translationErrorCodes } from "../../shared/translation-error-codes";
@@ -347,6 +353,7 @@ async function translateSubtitleChunk(
       TranslationOutputRepetitionGuard
     >();
     let stoppedForRepetition = false;
+    let recordedStreamError: unknown;
 
     const result = streamText({
       model: ai(model),
@@ -356,6 +363,9 @@ async function translateSubtitleChunk(
       prompt: requestPrompt,
       maxRetries: 0,
       abortSignal: requestAbortSignal,
+      onError({ error }) {
+        recordedStreamError = error;
+      },
       onChunk({ chunk }) {
         if (
           chunk.type !== "text-delta" &&
@@ -388,6 +398,13 @@ async function translateSubtitleChunk(
     } catch (error) {
       if (stoppedForRepetition && !abortSignal?.aborted) {
         throw new Error(translationErrorCodes.repetitiveModelOutput);
+      }
+      if (
+        NoOutputGeneratedError.isInstance(error) &&
+        APICallError.isInstance(recordedStreamError) &&
+        !recordedStreamError.isRetryable
+      ) {
+        throw recordedStreamError;
       }
       throw error;
     }
