@@ -122,6 +122,7 @@ async function startMockOpenAiServer(options: {
     empty?: boolean;
     elements?: string[];
     errorMessage?: string;
+    responseHeaders?: Record<string, string>;
   };
   onRequest?: (request: {
     startedAt: number;
@@ -170,6 +171,11 @@ async function startMockOpenAiServer(options: {
           if (streamResponse?.status) {
             response.statusCode = streamResponse.status;
             response.setHeader("Content-Type", "application/json");
+            for (const [name, value] of Object.entries(
+              streamResponse.responseHeaders ?? {}
+            )) {
+              response.setHeader(name, value);
+            }
             response.end(
               JSON.stringify({
                 error: {
@@ -967,6 +973,59 @@ test("an HTTP 401 translation response is not retried like an empty stream", asy
     expect(progress.status).toBe("error");
     expect(progress.error).toContain("Invalid API key");
     expect(streamRequests).toBe(1);
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("a retryable HTTP 429 stream error honors Retry-After before succeeding", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-empty-stream-429-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "movie.srt");
+  const taskId = "15151515-1515-4515-8515-151515151515";
+  writeFileSync(
+    sourcePath,
+    "1\n00:00:00,000 --> 00:00:01,000\n你好\n",
+    "utf8"
+  );
+  const streamRequestStarts: number[] = [];
+  const mockServer = await startMockOpenAiServer({
+    onRequest: ({ bodyText, startedAt }) => {
+      if (JSON.parse(bodyText).stream === true) {
+        streamRequestStarts.push(startedAt);
+      }
+    },
+    getStreamResponse: (_bodyText, requestNumber) =>
+      requestNumber === 1
+        ? {
+            status: 429,
+            errorMessage: "Rate limit exceeded",
+            responseHeaders: { "retry-after-ms": "1500" },
+          }
+        : { elements: ["Recovered after rate limit"] },
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    const progress = await runSingleSubtitleTranslation(page, {
+      apiHost: mockServer.apiHost,
+      sourcePath,
+      taskId,
+    });
+
+    expect(progress.status, progress.error).toBe("done");
+    expect(streamRequestStarts).toHaveLength(2);
+    expect(streamRequestStarts[1] - streamRequestStarts[0]).toBeGreaterThanOrEqual(
+      1400
+    );
+    expect(
+      readFileSync(path.join(temporaryDirectory, "movie.en.srt"), "utf8")
+    ).toContain("Recovered after rate limit");
   } finally {
     await app?.close();
     await mockServer.close();

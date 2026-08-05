@@ -95,8 +95,16 @@ export function getErrorDetails(error: unknown): {
 }
 
 export function getRetryAfterMs(error: unknown): number {
-  if (!APICallError.isInstance(error) || !error.responseHeaders) return 0;
-  return getRetryAfterMsFromHeaders(error.responseHeaders);
+  const apiCallError = APICallError.isInstance(error)
+    ? error
+    : typeof error === "object" &&
+        error !== null &&
+        "cause" in error &&
+        APICallError.isInstance(error.cause)
+      ? error.cause
+      : undefined;
+  if (!apiCallError?.responseHeaders) return 0;
+  return getRetryAfterMsFromHeaders(apiCallError.responseHeaders);
 }
 
 export function isRetryableTranslationError(error: unknown): boolean {

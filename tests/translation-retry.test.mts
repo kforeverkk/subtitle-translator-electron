@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  APICallError,
   NoObjectGeneratedError,
   NoOutputGeneratedError,
 } from "ai";
@@ -14,6 +15,22 @@ import {
 const noWait = async () => {};
 const noJitter = () => 0;
 const ignoreRetry = () => {};
+
+function createApiCallError({
+  statusCode,
+  responseHeaders,
+}: {
+  statusCode: number;
+  responseHeaders?: Record<string, string>;
+}) {
+  return new APICallError({
+    message: `HTTP ${statusCode}`,
+    url: "https://example.com/v1/chat/completions",
+    requestBodyValues: {},
+    statusCode,
+    responseHeaders,
+  });
+}
 
 test("retries two empty model streams and returns the third result", async () => {
   let attempts = 0;
@@ -169,15 +186,46 @@ test("preserves the existing retryable error categories", () => {
 });
 
 test("does not retry an empty-output wrapper around a deterministic HTTP 401", () => {
-  const unauthorizedCause = Object.assign(new Error("Invalid API key"), {
-    status: 401,
-  });
+  const unauthorizedCause = createApiCallError({ statusCode: 401 });
   const wrapped = new NoOutputGeneratedError({
     message: "No output generated. Check the stream for errors.",
     cause: unauthorizedCause,
   });
 
   assert.equal(isRetryableTranslationError(wrapped), false);
+});
+
+test("honors Retry-After from a retryable API error wrapped as empty output", async () => {
+  const rateLimitedCause = createApiCallError({
+    statusCode: 429,
+    responseHeaders: { "retry-after-ms": "4000" },
+  });
+  const wrapped = new NoOutputGeneratedError({
+    message: "No output generated. Check the stream for errors.",
+    cause: rateLimitedCause,
+  });
+  const waits: number[] = [];
+  let attempts = 0;
+
+  const result = await retryTranslation(
+    async () => {
+      attempts++;
+      if (attempts === 1) throw wrapped;
+      return "translated";
+    },
+    undefined,
+    {
+      random: noJitter,
+      onRetry: ignoreRetry,
+      sleep: async (delayMs) => {
+        waits.push(delayMs);
+      },
+    }
+  );
+
+  assert.equal(result, "translated");
+  assert.equal(attempts, 2);
+  assert.deepEqual(waits, [4000]);
 });
 
 test("deduplicates visually identical outer and cause messages", () => {

@@ -401,8 +401,7 @@ async function translateSubtitleChunk(
       }
       if (
         NoOutputGeneratedError.isInstance(error) &&
-        APICallError.isInstance(recordedStreamError) &&
-        !recordedStreamError.isRetryable
+        APICallError.isInstance(recordedStreamError)
       ) {
         throw recordedStreamError;
       }
