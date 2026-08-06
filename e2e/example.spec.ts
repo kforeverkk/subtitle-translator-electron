@@ -987,6 +987,169 @@ test("an empty stream retries twice and succeeds on the third translation reques
   }
 });
 
+test("subtitle output rename failure preserves the last valid file and checkpoint", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-output-rename-failure-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "movie.srt");
+  const outputPath = path.join(temporaryDirectory, "movie.en.srt");
+  const taskId = "14141414-1414-4414-8414-141414141414";
+  const checkpointPath = path.join(
+    temporaryDirectory,
+    `movie.translation.${taskId.replaceAll("-", "")}.json`
+  );
+  writeFileSync(
+    sourcePath,
+    "1\n00:00:00,000 --> 00:00:01,000\n你好\n",
+    "utf8"
+  );
+  writeFileSync(outputPath, "last valid subtitle", "utf8");
+  const mockServer = await startMockOpenAiServer({
+    getStreamElements: () => ["Translated subtitle"],
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    await app.evaluate(() => {
+      const mainGlobal = globalThis as typeof globalThis & {
+        __subtitleTranslatorOutputRenameHook?: (
+          temporaryPath: string,
+          outputPath: string
+        ) => Promise<void>;
+      };
+      mainGlobal.__subtitleTranslatorOutputRenameHook = async () => {
+        throw Object.assign(new Error("forced subtitle rename failure"), {
+          code: "EPERM",
+        });
+      };
+    });
+    const page = await app.firstWindow();
+    const progress = await runSingleSubtitleTranslation(page, {
+      apiHost: mockServer.apiHost,
+      sourcePath,
+      taskId,
+    });
+
+    expect(progress.status).toBe("error");
+    expect(readFileSync(outputPath, "utf8")).toBe("last valid subtitle");
+    expect(existsSync(checkpointPath)).toBe(true);
+    expect(
+      readdirSync(temporaryDirectory).filter(
+        (name) => name.startsWith("movie.en.srt.") && name.endsWith(".tmp")
+      )
+    ).toEqual([]);
+  } finally {
+    if (app) {
+      await app.evaluate(() => {
+        const mainGlobal = globalThis as typeof globalThis & {
+          __subtitleTranslatorOutputRenameHook?: unknown;
+        };
+        delete mainGlobal.__subtitleTranslatorOutputRenameHook;
+      }).catch(() => undefined);
+    }
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("subtitle output recovers after a failed partial atomic commit", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-output-rename-recovery-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "movie.srt");
+  const outputPath = path.join(temporaryDirectory, "movie.en.srt");
+  const taskId = "15151515-1515-4515-8515-151515151515";
+  const checkpointPath = path.join(
+    temporaryDirectory,
+    `movie.translation.${taskId.replaceAll("-", "")}.json`
+  );
+  writeFileSync(
+    sourcePath,
+    "1\n00:00:00,000 --> 00:00:01,000\n你好\n",
+    "utf8"
+  );
+  writeFileSync(outputPath, "last valid subtitle", "utf8");
+  const mockServer = await startMockOpenAiServer({
+    getStreamElements: () => ["Recovered translated subtitle"],
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    await app.evaluate(() => {
+      const mainGlobal = globalThis as typeof globalThis & {
+        __subtitleTranslatorOutputRenameAttempts?: number;
+        __subtitleTranslatorOutputBeforeRecovery?: string;
+        __subtitleTranslatorOutputRenameHook?: (
+          temporaryPath: string,
+          outputPath: string
+        ) => Promise<void>;
+      };
+      mainGlobal.__subtitleTranslatorOutputRenameAttempts = 0;
+      mainGlobal.__subtitleTranslatorOutputRenameHook = async (
+        temporaryPath,
+        outputPath
+      ) => {
+        mainGlobal.__subtitleTranslatorOutputRenameAttempts =
+          (mainGlobal.__subtitleTranslatorOutputRenameAttempts ?? 0) + 1;
+        if (mainGlobal.__subtitleTranslatorOutputRenameAttempts <= 5) {
+          throw Object.assign(new Error("forced partial rename failure"), {
+            code: "EPERM",
+          });
+        }
+        const nodeFs = process.getBuiltinModule("node:fs");
+        mainGlobal.__subtitleTranslatorOutputBeforeRecovery =
+          nodeFs.readFileSync(outputPath, "utf8");
+        await nodeFs.promises.rename(temporaryPath, outputPath);
+      };
+    });
+    const page = await app.firstWindow();
+    const progress = await runSingleSubtitleTranslation(page, {
+      apiHost: mockServer.apiHost,
+      sourcePath,
+      taskId,
+    });
+    const observed = await app.evaluate(() => {
+      const mainGlobal = globalThis as typeof globalThis & {
+        __subtitleTranslatorOutputRenameAttempts?: number;
+        __subtitleTranslatorOutputBeforeRecovery?: string;
+      };
+      return {
+        attempts: mainGlobal.__subtitleTranslatorOutputRenameAttempts,
+        beforeRecovery: mainGlobal.__subtitleTranslatorOutputBeforeRecovery,
+      };
+    });
+
+    expect(progress.status, progress.error).toBe("done");
+    expect(observed).toEqual({
+      attempts: 6,
+      beforeRecovery: "last valid subtitle",
+    });
+    expect(readFileSync(outputPath, "utf8")).toContain(
+      "Recovered translated subtitle"
+    );
+    expect(existsSync(checkpointPath)).toBe(false);
+  } finally {
+    if (app) {
+      await app.evaluate(() => {
+        const mainGlobal = globalThis as typeof globalThis & {
+          __subtitleTranslatorOutputRenameAttempts?: unknown;
+          __subtitleTranslatorOutputBeforeRecovery?: unknown;
+          __subtitleTranslatorOutputRenameHook?: unknown;
+        };
+        delete mainGlobal.__subtitleTranslatorOutputRenameAttempts;
+        delete mainGlobal.__subtitleTranslatorOutputBeforeRecovery;
+        delete mainGlobal.__subtitleTranslatorOutputRenameHook;
+      }).catch(() => undefined);
+    }
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("three empty streams fail only after the third request and keep the checkpoint", async () => {
   const temporaryDirectory = mkdtempSync(
     path.join(tmpdir(), "subtitle-translator-empty-stream-failure-")

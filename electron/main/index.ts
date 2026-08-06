@@ -88,6 +88,7 @@ import {
 import {
   createSubtitleOutputWriter,
   writeFinalSubtitleOutput,
+  writeSubtitleOutputAtomically,
 } from "./utils/subtitle-file-writer";
 import type {
   ParsedSubtitle,
@@ -1138,8 +1139,25 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         outputIdentity
       );
       outputPath = translatedOutputPath;
-      const subtitleOutputWriter =
-        createSubtitleOutputWriter(translatedOutputPath);
+      const outputRenameHook = e2eUserDataPath
+        ? (
+            globalThis as typeof globalThis & {
+              __subtitleTranslatorOutputRenameHook?: (
+                temporaryPath: string,
+                outputPath: string
+              ) => Promise<void>;
+            }
+          ).__subtitleTranslatorOutputRenameHook
+        : undefined;
+      const subtitleOutputWriter = createSubtitleOutputWriter(
+        translatedOutputPath,
+        outputRenameHook
+          ? (currentOutputPath, content) =>
+              writeSubtitleOutputAtomically(currentOutputPath, content, {
+                renameFile: outputRenameHook,
+              })
+          : undefined
+      );
       let analysisData = shouldRestartTranslation
         ? undefined
         : input.analysis;
