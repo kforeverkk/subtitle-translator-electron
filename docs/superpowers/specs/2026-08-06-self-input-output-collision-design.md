@@ -10,14 +10,15 @@
 
 正常输出名称保持不变。只有计算后的输出路径与当前输入路径相同时才启用备用名称。
 
-仅译文模式继续沿用现有规则：
+仅译文与双语模式使用相同的备用规则：保留当前输入文件的完整基本名，再追加本次生成的语言后缀。
 
 ```text
 movie.en.srt + English
-→ movie.translated.en.srt
-```
+→ movie.en.en.srt
 
-双语模式保留当前输入文件的完整基本名，再追加本次生成的双语后缀：
+movie.translated.srt + unknown target
+→ movie.translated.translated.srt
+```
 
 ```text
 movie.en-zh.srt + translate-original(en-zh)
@@ -39,9 +40,9 @@ movie.original-translated.ass + unknown original-translate
 
 复用 checkpoint 输出身份后，必须使用最终输出目录重新检查实际输出路径。
 
-如果 checkpoint 保存的输出文件名会指向当前输入文件，则不直接复用危险文件名，而是根据当前输出格式、目标语言和 checkpoint 保存的检测原语言生成上述备用名称。修正后的输出身份写回后续 checkpoint，保证续传文件名稳定。
+如果 checkpoint 保存的输出文件名会指向当前输入文件，则不直接复用危险文件名，而是根据当前输出格式、目标语言和 checkpoint 保存的检测原语言生成上述统一备用名称。修正后的输出身份写回后续 checkpoint，保证续传文件名稳定。
 
-不发生路径碰撞的 checkpoint 输出身份保持原样。
+不发生路径碰撞的 checkpoint 输出身份保持原样。例如旧 checkpoint 已安全使用 `movie.translated.en.srt` 时，续传不会强制迁移到 `movie.en.en.srt`，避免同一任务中途更换输出文件。
 
 ## 明确不在范围内
 

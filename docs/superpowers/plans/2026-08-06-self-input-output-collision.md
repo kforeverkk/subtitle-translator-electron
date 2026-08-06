@@ -4,7 +4,7 @@
 
 **Goal:** Prevent a task from writing its translated subtitle over its own current input while preserving intentional overwrites of other existing output files.
 
-**Architecture:** Extend output-path collision fallback to every bilingual format and add a final-path output-identity sanitizer used after fresh generation or checkpoint reuse. The fallback retains the current input basename and appends the newly generated bilingual suffix; unrelated existing destinations remain overwriteable.
+**Architecture:** Use one collision fallback for translated-only and bilingual formats, plus a final-path output-identity sanitizer used after fresh generation or checkpoint reuse. The fallback retains the current input basename and appends the newly generated language suffix; unrelated existing destinations remain overwriteable.
 
 **Tech Stack:** TypeScript, Node.js path utilities, Electron main process, Node.js test runner, Playwright Electron E2E.
 
@@ -14,7 +14,8 @@
 - Do not add numbered output filenames.
 - Do not test for ordinary destination existence.
 - Continue overwriting unrelated existing output files.
-- Keep the existing translated-only `.translated.<language>` fallback.
+- Use the same repeated-language-suffix fallback for translated-only and bilingual output.
+- Preserve already-safe legacy checkpoint file names instead of migrating them.
 - Apply protection to fresh and checkpoint-resumed output identities.
 - Do not change cross-task path claims in this work.
 

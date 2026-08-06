@@ -135,7 +135,7 @@ test("never writes translated-only output back to the input subtitle", () => {
       "movie.en.srt",
       "English"
     ),
-    path.join("subtitles", "movie.translated.en.srt")
+    path.join("subtitles", "movie.en.en.srt")
   );
   assert.equal(
     getTranslatedPath(
@@ -146,6 +146,16 @@ test("never writes translated-only output back to the input subtitle", () => {
       "English"
     ),
     path.join("subtitles", "movie.en.srt")
+  );
+  assert.equal(
+    getTranslatedPath(
+      path.join("subtitles", "movie.translated.srt"),
+      "srt-translation",
+      undefined,
+      "movie.translated.srt",
+      "Unknown target"
+    ),
+    path.join("subtitles", "movie.translated.translated.srt")
   );
 });
 
@@ -230,6 +240,11 @@ test("repairs only identities that would overwrite the current input", () => {
     detectedSourceLanguage: "Chinese",
     fileName: "movie.en-zh.srt",
   };
+  const legacySafeIdentity = {
+    format: "srt-translation" as const,
+    detectedSourceLanguage: "English",
+    fileName: "movie.translated.en.srt",
+  };
 
   assert.deepEqual(
     getSafeTranslationOutputIdentity({
@@ -240,7 +255,7 @@ test("repairs only identities that would overwrite the current input", () => {
     }),
     {
       ...dangerousIdentity,
-      fileName: "movie.translated.en.srt",
+      fileName: "movie.en.en.srt",
     }
   );
   assert.equal(
@@ -251,6 +266,15 @@ test("repairs only identities that would overwrite the current input", () => {
       identity: safeIdentity,
     }),
     safeIdentity
+  );
+  assert.equal(
+    getSafeTranslationOutputIdentity({
+      filePath,
+      sourceName: "movie.en.srt",
+      targetLanguage: "English",
+      identity: legacySafeIdentity,
+    }),
+    legacySafeIdentity
   );
   assert.equal(
     getSafeTranslationOutputIdentity({

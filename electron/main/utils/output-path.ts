@@ -258,18 +258,14 @@ export function getTranslatedPath(
     `${basename}.${suffix}.${extension}`
   );
 
-  if (
-    outputFormat !== "srt-translation" ||
-    getComparablePath(outputPath) !== getComparablePath(filePath)
-  ) {
+  if (getComparablePath(outputPath) !== getComparablePath(filePath)) {
     return outputPath;
   }
 
-  const safeSuffix =
-    suffix === "translated" ? "translated.2" : `translated.${suffix}`;
+  const sourceBasename = path.basename(sourceName, path.extname(sourceName));
   return path.join(
     outputDirectory ?? path.dirname(filePath),
-    `${basename}.${safeSuffix}.${extension}`
+    `${sourceBasename}.${suffix}.${extension}`
   );
 }
 
@@ -395,22 +391,6 @@ export function getSafeTranslationOutputIdentity({
   );
   if (getComparablePath(outputPath) !== getComparablePath(filePath)) {
     return identity;
-  }
-
-  if (identity.format === "srt-translation") {
-    return {
-      ...identity,
-      fileName: path.basename(
-        getTranslatedPath(
-          filePath,
-          identity.format,
-          outputDirectory,
-          sourceName,
-          targetLanguage,
-          identity.detectedSourceLanguage
-        )
-      ),
-    };
   }
 
   const sourceExtension = path.extname(sourceName);

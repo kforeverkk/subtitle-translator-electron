@@ -987,6 +987,42 @@ test("an empty stream retries twice and succeeds on the third translation reques
   }
 });
 
+test("translated-only self-collision repeats the language suffix and preserves the input", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-single-self-collision-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "movie.en.srt");
+  const outputPath = path.join(temporaryDirectory, "movie.en.en.srt");
+  const taskId = "21212121-2121-4121-8121-212121212121";
+  const sourceText =
+    "1\n00:00:00,000 --> 00:00:01,000\n你好\n";
+  writeFileSync(sourcePath, sourceText, "utf8");
+  const mockServer = await startMockOpenAiServer({
+    getDetectedLanguage: () => "Chinese",
+    getStreamElements: () => ["Hello"],
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    const progress = await runSingleSubtitleTranslation(page, {
+      apiHost: mockServer.apiHost,
+      sourcePath,
+      taskId,
+    });
+
+    expect(progress.status, progress.error).toBe("done");
+    expect(progress.outputPath).toBe(outputPath);
+    expect(readFileSync(sourcePath, "utf8")).toBe(sourceText);
+    expect(readFileSync(outputPath, "utf8")).toContain("Hello");
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("bilingual self-collision appends the language suffix and preserves the input", async () => {
   const temporaryDirectory = mkdtempSync(
     path.join(tmpdir(), "subtitle-translator-bilingual-self-collision-")
