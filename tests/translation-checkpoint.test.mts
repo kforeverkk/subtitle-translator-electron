@@ -92,6 +92,75 @@ test("accepts complete source hashes and rejects partial or malformed hash metad
   }
 });
 
+test("accepts a safe output identity and keeps older checkpoints compatible", () => {
+  const baseDocument = {
+    version: 3,
+    format: "srt",
+    source: { name: "episode.srt", fingerprint },
+    translation: { configFingerprint: "c".repeat(64) },
+    task: { id: taskId },
+    subtitle: [
+      {
+        type: "cue",
+        data: { start: 0, end: 1_000, text: "Hello" },
+      },
+    ],
+  };
+  const output = {
+    format: "srt-bilingual",
+    detectedSourceLanguage: "Chinese",
+    fileName: "episode.en-zh.srt",
+  };
+
+  assert.deepEqual(
+    parseTranslationCache(JSON.stringify({ ...baseDocument, output })),
+    { ...baseDocument, output }
+  );
+  assert.deepEqual(
+    parseTranslationCache(JSON.stringify(baseDocument)),
+    baseDocument
+  );
+});
+
+test("rejects unsafe checkpoint output identities", () => {
+  const baseDocument = {
+    version: 3,
+    format: "srt",
+    source: { name: "episode.srt", fingerprint },
+    translation: { configFingerprint: "c".repeat(64) },
+    task: { id: taskId },
+    subtitle: [
+      {
+        type: "cue",
+        data: { start: 0, end: 1_000, text: "Hello" },
+      },
+    ],
+  };
+
+  for (const output of [
+    {
+      format: "srt-bilingual",
+      detectedSourceLanguage: "Chinese",
+      fileName: "../episode.en-zh.srt",
+    },
+    {
+      format: "srt-bilingual",
+      detectedSourceLanguage: "Chinese",
+      fileName: "episode.en-zh.ass",
+    },
+    {
+      format: "srt-bilingual",
+      detectedSourceLanguage: 1,
+      fileName: "episode.en-zh.srt",
+    },
+  ]) {
+    assert.throws(
+      () => parseTranslationCache(JSON.stringify({ ...baseDocument, output })),
+      /ERR_INCOMPATIBLE_TRANSLATION_CHECKPOINT/
+    );
+  }
+});
+
 test("identifies whether the translation configuration matches", () => {
   const config = {
     apiHost: "https://api.openai.com/v1",

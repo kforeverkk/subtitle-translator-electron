@@ -1,5 +1,15 @@
 import path from "node:path";
-import type { SubtitleOutputFormat } from "./subtitle-output";
+import {
+  getSubtitleOutputExtension,
+  subtitleOutputFormats,
+  type SubtitleOutputFormat,
+} from "./subtitle-output";
+
+export interface TranslationOutputIdentity {
+  format: SubtitleOutputFormat;
+  detectedSourceLanguage: string;
+  fileName: string;
+}
 
 const languageAliases: Record<string, string> = {
   english: "en",
@@ -188,5 +198,92 @@ export function getTranslatedPath(
   return path.join(
     outputDirectory ?? path.dirname(filePath),
     `${basename}.${safeSuffix}.${extension}`
+  );
+}
+
+function isSubtitleOutputFormat(value: unknown): value is SubtitleOutputFormat {
+  return (
+    typeof value === "string" &&
+    subtitleOutputFormats.includes(value as SubtitleOutputFormat)
+  );
+}
+
+function isSafeOutputFileName(
+  fileName: unknown,
+  outputFormat: SubtitleOutputFormat
+): fileName is string {
+  if (
+    typeof fileName !== "string" ||
+    fileName.length === 0 ||
+    fileName === "." ||
+    fileName === ".." ||
+    fileName.includes("\0") ||
+    fileName.includes("/") ||
+    fileName.includes("\\") ||
+    path.isAbsolute(fileName) ||
+    path.win32.isAbsolute(fileName) ||
+    path.posix.isAbsolute(fileName)
+  ) {
+    return false;
+  }
+
+  return (
+    path.extname(fileName).toLocaleLowerCase("en-US") ===
+    `.${getSubtitleOutputExtension(outputFormat)}`
+  );
+}
+
+export function isTranslationOutputIdentity(
+  value: unknown
+): value is TranslationOutputIdentity {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    isSubtitleOutputFormat(candidate.format) &&
+    typeof candidate.detectedSourceLanguage === "string" &&
+    isSafeOutputFileName(candidate.fileName, candidate.format)
+  );
+}
+
+export function isReusableTranslationOutputIdentity(
+  value: unknown,
+  outputFormat: SubtitleOutputFormat
+): value is TranslationOutputIdentity {
+  return isTranslationOutputIdentity(value) && value.format === outputFormat;
+}
+
+export function createTranslationOutputIdentity(
+  filePath: string,
+  outputFormat: SubtitleOutputFormat,
+  sourceName = path.basename(filePath),
+  targetLanguage?: string,
+  detectedSourceLanguage = ""
+): TranslationOutputIdentity {
+  const outputPath = getTranslatedPath(
+    filePath,
+    outputFormat,
+    undefined,
+    sourceName,
+    targetLanguage,
+    detectedSourceLanguage
+  );
+  return {
+    format: outputFormat,
+    detectedSourceLanguage,
+    fileName: path.basename(outputPath),
+  };
+}
+
+export function getTranslatedPathFromOutputIdentity(
+  filePath: string,
+  outputDirectory: string | undefined,
+  identity: TranslationOutputIdentity
+): string {
+  if (!isTranslationOutputIdentity(identity)) {
+    throw new Error("Invalid translation output identity");
+  }
+  return path.join(
+    outputDirectory ?? path.dirname(filePath),
+    identity.fileName
   );
 }

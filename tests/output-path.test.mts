@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 import {
+  createTranslationOutputIdentity,
   getLanguageCode,
   getSubtitleLanguageSuffix,
   getTranslatedPath,
+  getTranslatedPathFromOutputIdentity,
+  isReusableTranslationOutputIdentity,
+  isTranslationOutputIdentity,
 } from "../electron/main/utils/output-path.ts";
 
 test("maps supported language names and codes", () => {
@@ -141,4 +145,69 @@ test("removes a generated bilingual suffix without changing internal dots", () =
       "Some.translated.story.2025.en-ja.srt"
     )
   );
+});
+
+test("creates a reusable output identity without binding the output directory", () => {
+  const identity = createTranslationOutputIdentity(
+    path.join("subtitles", "movie.srt"),
+    "srt-bilingual",
+    "movie.srt",
+    "English",
+    "Chinese"
+  );
+
+  assert.deepEqual(identity, {
+    format: "srt-bilingual",
+    detectedSourceLanguage: "Chinese",
+    fileName: "movie.en-zh.srt",
+  });
+  assert.equal(
+    getTranslatedPathFromOutputIdentity(
+      path.join("subtitles", "movie.srt"),
+      path.join("other-output"),
+      identity
+    ),
+    path.join("other-output", "movie.en-zh.srt")
+  );
+  assert.equal(
+    getTranslatedPathFromOutputIdentity(
+      path.join("subtitles", "movie.srt"),
+      undefined,
+      identity
+    ),
+    path.join("subtitles", "movie.en-zh.srt")
+  );
+});
+
+test("reuses only safe output identities with the same output format", () => {
+  const validIdentity = {
+    format: "ass-bilingual" as const,
+    detectedSourceLanguage: "Chinese",
+    fileName: "movie.en-zh.ass",
+  };
+
+  assert.equal(isTranslationOutputIdentity(validIdentity), true);
+  assert.equal(
+    isReusableTranslationOutputIdentity(validIdentity, "ass-bilingual"),
+    true
+  );
+  assert.equal(
+    isReusableTranslationOutputIdentity(validIdentity, "srt-bilingual"),
+    false
+  );
+
+  for (const unsafeIdentity of [
+    { ...validIdentity, fileName: "" },
+    { ...validIdentity, fileName: "." },
+    { ...validIdentity, fileName: ".." },
+    { ...validIdentity, fileName: "../movie.en-zh.ass" },
+    { ...validIdentity, fileName: "folder/movie.en-zh.ass" },
+    { ...validIdentity, fileName: "folder\\movie.en-zh.ass" },
+    { ...validIdentity, fileName: path.resolve("movie.en-zh.ass") },
+    { ...validIdentity, fileName: "movie.en-zh.srt" },
+    { ...validIdentity, detectedSourceLanguage: 123 },
+    { ...validIdentity, format: "unknown" },
+  ]) {
+    assert.equal(isTranslationOutputIdentity(unsafeIdentity), false);
+  }
 });

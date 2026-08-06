@@ -55,6 +55,10 @@ import { createSubtitleSourceFingerprint } from "./subtitle-source-identity";
 import {
   convertSsaToBilingualAss,
 } from "./ssa-to-ass";
+import {
+  isTranslationOutputIdentity,
+  type TranslationOutputIdentity,
+} from "./output-path";
 
 export interface SubtitleCueData {
   text: string;
@@ -117,6 +121,7 @@ export interface TranslationCacheDocument {
   task?: {
     id: string;
   };
+  output?: TranslationOutputIdentity;
   subtitle: ParsedSubtitle;
   analysis?: string;
 }
@@ -217,6 +222,7 @@ export function createTranslationCacheDocument({
   format,
   configFingerprint,
   taskId,
+  output,
   analysis,
   sourceFingerprint,
 }: {
@@ -225,6 +231,7 @@ export function createTranslationCacheDocument({
   format: SubtitleFileExtension;
   configFingerprint: string;
   taskId: string;
+  output?: TranslationOutputIdentity;
   analysis?: string;
   sourceFingerprint?: TranslationSourceFingerprint;
 }): TranslationCacheDocument {
@@ -237,6 +244,7 @@ export function createTranslationCacheDocument({
     },
     translation: { configFingerprint },
     task: { id: taskId },
+    ...(output ? { output } : {}),
     subtitle,
     ...(analysis ? { analysis } : {}),
   };
@@ -274,6 +282,8 @@ export function parseTranslationCache(
     (value.version === 2 && value.task !== undefined) ||
     (value.version === 3 &&
       (!isRecord(value.task) || !isTranslationTaskId(value.task.id))) ||
+    (value.output !== undefined &&
+      !isTranslationOutputIdentity(value.output)) ||
     !isParsedSubtitle(value.subtitle) ||
     getSubtitleCues(value.subtitle).length === 0 ||
     (value.analysis !== undefined && typeof value.analysis !== "string")
