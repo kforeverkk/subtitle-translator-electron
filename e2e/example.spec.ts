@@ -112,6 +112,18 @@ function createAssCheckpointSubtitle(
   };
 }
 
+function isContentAnalysisRequest(requestBodyText: string): boolean {
+  return (
+    requestBodyText.includes("subtitle content analyst") ||
+    (requestBodyText.includes("plotSummary") &&
+      requestBodyText.includes("glossary"))
+  );
+}
+
+function isLanguageDetectionRequest(requestBodyText: string): boolean {
+  return requestBodyText.includes("Detect the primary spoken language");
+}
+
 async function startMockOpenAiServer(options: {
   streamDelayMs?: number | ((requestBodyText: string) => number);
   getStreamElements?: (requestBodyText: string) => string[];
@@ -129,6 +141,14 @@ async function startMockOpenAiServer(options: {
     requestBodyText: string,
     requestNumber: number
   ) => string;
+  getAnalysisResponse?: (
+    requestBodyText: string,
+    requestNumber: number
+  ) => {
+    status?: number;
+    output?: unknown;
+    errorMessage?: string;
+  };
   onRequest?: (request: {
     startedAt: number;
     authorization?: string;
@@ -140,6 +160,7 @@ async function startMockOpenAiServer(options: {
 }> {
   let streamRequestCount = 0;
   let languageRequestCount = 0;
+  let analysisRequestCount = 0;
   const server = createServer((request, response) => {
     void (async () => {
       if (request.url === "/v1/models") {
@@ -247,6 +268,61 @@ async function startMockOpenAiServer(options: {
             })}\n\n`
           );
           response.end("data: [DONE]\n\n");
+          return;
+        }
+
+        if (isContentAnalysisRequest(requestBodyText)) {
+          analysisRequestCount++;
+          const analysisResponse = options.getAnalysisResponse?.(
+            requestBodyText,
+            analysisRequestCount
+          );
+          if (analysisResponse?.status) {
+            response.statusCode = analysisResponse.status;
+            response.setHeader("Content-Type", "application/json");
+            response.end(
+              JSON.stringify({
+                error: {
+                  message:
+                    analysisResponse.errorMessage ??
+                    `Mock HTTP ${analysisResponse.status}`,
+                  type: "mock_analysis_error",
+                },
+              })
+            );
+            return;
+          }
+
+          response.setHeader("Content-Type", "application/json");
+          response.end(
+            JSON.stringify({
+              id: "chatcmpl-analysis-test",
+              object: "chat.completion",
+              created,
+              model: "test-model",
+              choices: [
+                {
+                  index: 0,
+                  message: {
+                    role: "assistant",
+                    content: JSON.stringify(
+                      analysisResponse?.output ?? {
+                        plotSummary:
+                          "A mock subtitle plot summary for consistent translation.",
+                        glossary: [],
+                      }
+                    ),
+                  },
+                  finish_reason: "stop",
+                },
+              ],
+              usage: {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+              },
+            })
+          );
           return;
         }
 
@@ -961,6 +1037,63 @@ test("three empty streams fail only after the third request and keep the checkpo
   }
 });
 
+test("required content analysis fails after three invalid glossary responses without translating", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-required-analysis-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "required-analysis.srt");
+  const taskId = "18181818-1818-4818-8818-181818181818";
+  const sourceText = Array.from({ length: 20 }, (_, index) => {
+    const startSecond = String(index).padStart(2, "0");
+    const endSecond = String(index + 1).padStart(2, "0");
+    return `${index + 1}\n00:00:${startSecond},000 --> 00:00:${endSecond},000\n原文 ${index + 1}\n`;
+  }).join("\n");
+  writeFileSync(sourcePath, sourceText, "utf8");
+
+  let analysisRequests = 0;
+  let translationRequests = 0;
+  const mockServer = await startMockOpenAiServer({
+    onRequest: ({ bodyText }) => {
+      const requestBody = JSON.parse(bodyText) as { stream?: boolean };
+      if (requestBody.stream === true) {
+        translationRequests++;
+      } else if (isContentAnalysisRequest(bodyText)) {
+        analysisRequests++;
+      }
+    },
+    getAnalysisResponse: () => ({
+      output: {
+        plotSummary: "This response intentionally omits the glossary field.",
+      },
+    }),
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    const progress = await runSingleSubtitleTranslation(page, {
+      apiHost: mockServer.apiHost,
+      sourcePath,
+      taskId,
+    });
+
+    expect(progress.status).toBe("error");
+    expect(progress.error).toContain("ERR_INCOMPLETE_MODEL_OUTPUT");
+    expect(analysisRequests).toBe(3);
+    expect(translationRequests).toBe(0);
+    expect(
+      existsSync(
+        path.join(temporaryDirectory, "required-analysis.en.srt")
+      )
+    ).toBe(false);
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("bilingual resume keeps its first detected-language filename", async () => {
   const temporaryDirectory = mkdtempSync(
     path.join(tmpdir(), "subtitle-translator-bilingual-resume-name-")
@@ -979,9 +1112,15 @@ test("bilingual resume keeps its first detected-language filename", async () => 
   writeFileSync(sourcePath, sourceText, "utf8");
 
   let languageDetectionRequests = 0;
+  let analysisRequests = 0;
+  const translationRequestBodies: string[] = [];
   const mockServer = await startMockOpenAiServer({
     onRequest: ({ bodyText }) => {
-      if (JSON.parse(bodyText).stream !== true) {
+      if (JSON.parse(bodyText).stream === true) {
+        translationRequestBodies.push(bodyText);
+      } else if (isContentAnalysisRequest(bodyText)) {
+        analysisRequests++;
+      } else if (isLanguageDetectionRequest(bodyText)) {
         languageDetectionRequests++;
       }
     },
@@ -1014,8 +1153,30 @@ test("bilingual resume keeps its first detected-language filename", async () => 
 
     expect(failedProgress.status).toBe("error");
     expect(languageDetectionRequests).toBe(1);
+    expect(analysisRequests).toBe(1);
     expect(existsSync(path.join(temporaryDirectory, "movie.en-zh.srt"))).toBe(
       true
+    );
+    expect(
+      (
+        JSON.parse(readFileSync(checkpointPath, "utf8")) as {
+          analysis?: string;
+          output?: {
+            format?: string;
+            detectedSourceLanguage?: string;
+            fileName?: string;
+          };
+        }
+      )
+    ).toEqual(
+      expect.objectContaining({
+        analysis: expect.stringContaining("## Glossary"),
+        output: {
+          format: "srt-bilingual",
+          detectedSourceLanguage: "Chinese",
+          fileName: "movie.en-zh.srt",
+        },
+      })
     );
     expect(
       (
@@ -1045,6 +1206,11 @@ test("bilingual resume keeps its first detected-language filename", async () => 
 
     expect(resumedProgress.status, resumedProgress.error).toBe("done");
     expect(languageDetectionRequests).toBe(1);
+    expect(analysisRequests).toBe(1);
+    expect(translationRequestBodies.at(-1)).toContain(
+      "A mock subtitle plot summary for consistent translation."
+    );
+    expect(translationRequestBodies.at(-1)).toContain("## Glossary");
     const completedOutput = readFileSync(
       path.join(temporaryDirectory, "movie.en-zh.srt"),
       "utf8"
@@ -1150,6 +1316,126 @@ test("legacy checkpoint backfills a stable bilingual output identity", async () 
       detectedSourceLanguage: "Chinese",
       fileName: "legacy.en-zh.srt",
     });
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("legacy analysis restart discards partial translations before required analysis", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-legacy-analysis-restart-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "legacy-analysis.srt");
+  const taskId = "19191919-1919-4919-8919-191919191919";
+  const checkpointPath = path.join(
+    temporaryDirectory,
+    `legacy-analysis.translation.${taskId.replaceAll("-", "")}.json`
+  );
+  const sourceCues = Array.from({ length: 20 }, (_, index) => ({
+    type: "cue" as const,
+    data: {
+      start: index * 1_000,
+      end: (index + 1) * 1_000,
+      text: `原文 ${index + 1}`,
+      ...(index < 5
+        ? { translatedText: `Stale translation ${index + 1}` }
+        : {}),
+    },
+  }));
+  const sourceText = sourceCues
+    .map((cue, index) => {
+      const startSecond = String(index).padStart(2, "0");
+      const endSecond = String(index + 1).padStart(2, "0");
+      return `${index + 1}\n00:00:${startSecond},000 --> 00:00:${endSecond},000\n${cue.data.text}\n`;
+    })
+    .join("\n");
+  writeFileSync(sourcePath, sourceText, "utf8");
+  const sourceInfo = statSync(sourcePath);
+  const apiPrompt = "Translate every cue to {{lang}}. {{additional}}";
+  let analysisRequests = 0;
+  const translatedCoreCounts: number[] = [];
+  const mockServer = await startMockOpenAiServer({
+    onRequest: ({ bodyText }) => {
+      if (isContentAnalysisRequest(bodyText)) analysisRequests++;
+      if (JSON.parse(bodyText).stream === true) {
+        translatedCoreCounts.push(
+          Number(
+            bodyText.match(/exactly (\d+) translated strings/i)?.[1] ?? 0
+          )
+        );
+      }
+    },
+    getStreamResponse: () => ({
+      elements: Array.from(
+        { length: 20 },
+        (_, index) => `Fresh translation ${index + 1}`
+      ),
+    }),
+  });
+  writeFileSync(
+    checkpointPath,
+    JSON.stringify({
+      version: 3,
+      format: "srt",
+      source: {
+        name: "legacy-analysis.srt",
+        fingerprint: {
+          size: sourceInfo.size,
+          mtimeMs: sourceInfo.mtimeMs,
+        },
+      },
+      translation: {
+        configFingerprint: createTestTranslationConfigFingerprint({
+          apiHost: mockServer.apiHost,
+          model: "test-model",
+          prompt: apiPrompt,
+          lang: "English",
+          additional: "",
+          temperature: 1,
+          contextSize: 5,
+        }),
+      },
+      task: { id: taskId },
+      output: {
+        format: "srt-bilingual",
+        detectedSourceLanguage: "Chinese",
+        fileName: "legacy-analysis.en-zh.srt",
+      },
+      subtitle: sourceCues,
+    }),
+    "utf8"
+  );
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    const progress = await runSingleSubtitleTranslation(page, {
+      apiHost: mockServer.apiHost,
+      sourcePath,
+      taskId,
+      outputFormat: "srt-bilingual",
+    });
+
+    expect(progress.status, progress.error).toBe("done");
+    expect(analysisRequests).toBe(1);
+    expect(translatedCoreCounts).toEqual([20]);
+    const output = readFileSync(
+      path.join(temporaryDirectory, "legacy-analysis.en-zh.srt"),
+      "utf8"
+    );
+    expect(output).toContain("Fresh translation 1");
+    expect(output).toContain("Fresh translation 20");
+    expect(output).not.toContain("Stale translation");
+    expect(
+      readdirSync(temporaryDirectory).filter(
+        (entry) =>
+          entry.includes(".translation.") ||
+          entry.endsWith(".backup.json")
+      )
+    ).toEqual([]);
   } finally {
     await app?.close();
     await mockServer.close();
