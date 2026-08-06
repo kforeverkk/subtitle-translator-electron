@@ -1017,7 +1017,7 @@ test("concurrent batches share one RPM budget for the same API account", async (
       }
     );
 
-    expect(requestStarts).toHaveLength(4);
+    expect(requestStarts).toHaveLength(2);
     const sortedRequestStarts = [...requestStarts].sort(
       (left, right) => left - right
     );
@@ -1039,7 +1039,7 @@ test("concurrent batches share one RPM budget for the same API account", async (
   }
 });
 
-test("a single zero-delay batch keeps its API count and throughput", async () => {
+test("a translated-only batch skips source language detection", async () => {
   const temporaryDirectory = mkdtempSync(
     path.join(tmpdir(), "subtitle-translator-single-rpm-")
   );
@@ -1049,10 +1049,10 @@ test("a single zero-delay batch keeps its API count and throughput", async () =>
     "1\n00:00:00,000 --> 00:00:01,000\n你好\n",
     "utf8"
   );
-  const requestStarts: number[] = [];
+  const requestBodies: string[] = [];
   const mockServer = await startMockOpenAiServer({
     getStreamElements: () => ["Hello"],
-    onRequest: ({ startedAt }) => requestStarts.push(startedAt),
+    onRequest: ({ bodyText }) => requestBodies.push(bodyText),
   });
 
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
@@ -1089,11 +1089,8 @@ test("a single zero-delay batch keeps its API count and throughput", async () =>
       { apiHost: mockServer.apiHost, sourcePath }
     );
 
-    expect(requestStarts).toHaveLength(2);
-    const sortedRequestStarts = [...requestStarts].sort(
-      (left, right) => left - right
-    );
-    expect(sortedRequestStarts[1] - sortedRequestStarts[0]).toBeLessThan(500);
+    expect(requestBodies).toHaveLength(1);
+    expect(isLanguageDetectionRequest(requestBodies[0])).toBe(false);
     expect(
       readFileSync(path.join(temporaryDirectory, "single-source.en.srt"), "utf8")
     ).toContain("Hello");

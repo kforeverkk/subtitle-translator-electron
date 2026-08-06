@@ -41,7 +41,10 @@ import {
 } from "./utils/subtitle-source-identity";
 import { createSubtitlePreview } from "./utils/subtitle-preview";
 import { normalizeAssFontName } from "./utils/ass-bilingual";
-import { subtitleOutputFormats } from "./utils/subtitle-output";
+import {
+  isBilingualOutput,
+  subtitleOutputFormats,
+} from "./utils/subtitle-output";
 import {
   createTranslationOutputIdentity,
   getReusableTranslationOutputIdentity,
@@ -1129,28 +1132,30 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       });
       if (!outputIdentity) {
         let detectedSourceLanguage = "";
-        try {
-          detectedSourceLanguage = await retryTranslation(
-            (texts) =>
-              detectSubtitleLanguage(texts, {
-                apiKeys: params.apiKeys,
-                apiHost: params.apiHost,
-                model: params.model,
-                requestRateLimiter,
+        if (isBilingualOutput(params.outputFormat)) {
+          try {
+            detectedSourceLanguage = await retryTranslation(
+              (texts) =>
+                detectSubtitleLanguage(texts, {
+                  apiKeys: params.apiKeys,
+                  apiHost: params.apiHost,
+                  model: params.model,
+                  requestRateLimiter,
+                  abortSignal,
+                }),
+              allTexts,
+              {
+                delayMs: params.delay,
                 abortSignal,
-              }),
-            allTexts,
-            {
-              delayMs: params.delay,
-              abortSignal,
-            }
-          );
-        } catch (languageDetectionError) {
-          abortSignal.throwIfAborted();
-          console.warn(
-            "Source language detection failed; using the original fallback:",
-            languageDetectionError
-          );
+              }
+            );
+          } catch (languageDetectionError) {
+            abortSignal.throwIfAborted();
+            console.warn(
+              "Source language detection failed; using the original fallback:",
+              languageDetectionError
+            );
+          }
         }
         outputIdentity = createTranslationOutputIdentity(
           file.path,
