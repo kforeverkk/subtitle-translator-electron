@@ -67,8 +67,11 @@ import {
   splitIntoChunk,
 } from "./utils/subtitle-chunks";
 import {
+  getExclusivePathClaimConflicts,
   getPathClaimKey,
+  hasSharedPathClaim,
   hasPathClaimConflict,
+  registerSharedPathClaims,
 } from "./utils/path-claims";
 import {
   backupTranslationCheckpoint,
@@ -164,6 +167,7 @@ const applicationLocaleSchema = z.enum(["en-US", "zh-TW", "zh-CN"]);
 type ApplicationLocale = z.infer<typeof applicationLocaleSchema>;
 let applicationLocale: ApplicationLocale | undefined;
 const activeTranslationPathClaims = new Set<string>();
+const activeTranslationInputPathClaimCounts = new Map<string, number>();
 const activeTranslationControllers = new Map<string, Set<AbortController>>();
 const requestRateLimiterRegistry = new RequestRateLimiterRegistry();
 
@@ -342,12 +346,7 @@ function claimTranslationPaths(
   pathsToClaim: readonly string[],
   batchPathClaims: Set<string>
 ): () => void {
-  const keys = pathsToClaim.map((filePath) => {
-    const canonicalDirectory = fs.realpathSync.native(path.dirname(filePath));
-    return getPathClaimKey(
-      path.join(canonicalDirectory, path.basename(filePath))
-    );
-  });
+  const keys = pathsToClaim.map(getCanonicalTranslationPathKey);
   if (
     hasPathClaimConflict(
       keys,
@@ -365,6 +364,17 @@ function claimTranslationPaths(
   return () => {
     for (const key of keys) activeTranslationPathClaims.delete(key);
   };
+}
+
+function getCanonicalTranslationPathKey(filePath: string): string {
+  try {
+    const canonicalDirectory = fs.realpathSync.native(path.dirname(filePath));
+    return getPathClaimKey(
+      path.join(canonicalDirectory, path.basename(filePath))
+    );
+  } catch {
+    return getPathClaimKey(filePath);
+  }
 }
 
 interface TranslationInput {
@@ -1043,6 +1053,31 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
     throw error;
   }
   const requestRateLimiter = requestRateLimiterLease.limiter;
+  const inputPathKeysByTaskId = new Map(
+    files.map((file) => [
+      file.taskId,
+      getCanonicalTranslationPathKey(file.path),
+    ])
+  );
+  const blockedInputPathKeys = getExclusivePathClaimConflicts(
+    [...inputPathKeysByTaskId.values()],
+    activeTranslationPathClaims
+  );
+  const blockedInputTaskIds = new Set(
+    files
+      .filter((file) =>
+        blockedInputPathKeys.has(
+          inputPathKeysByTaskId.get(file.taskId) ?? ""
+        )
+      )
+      .map((file) => file.taskId)
+  );
+  const releaseInputPathClaims = registerSharedPathClaims(
+    files
+      .filter((file) => !blockedInputTaskIds.has(file.taskId))
+      .map((file) => inputPathKeysByTaskId.get(file.taskId) ?? ""),
+    activeTranslationInputPathClaimCounts
+  );
   // Keep these claims for the whole request so later files cannot silently
   // overwrite an earlier file after its active write lock has been released.
   const batchPathClaims = new Set<string>();
@@ -1053,6 +1088,9 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
     let releasePathClaims: (() => void) | undefined;
     try {
       abortSignal.throwIfAborted();
+      if (blockedInputTaskIds.has(file.taskId)) {
+        throw new Error(translationErrorCodes.outputPathConflict);
+      }
       const input = readTranslationInput(
         file.path,
         file.taskId,
@@ -1140,6 +1178,11 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         sourceName: input.sourceName,
         targetLanguage: params.lang,
         identity: outputIdentity,
+        isProtectedInputPath: (candidatePath) =>
+          hasSharedPathClaim(
+            getCanonicalTranslationPathKey(candidatePath),
+            activeTranslationInputPathClaimCounts
+          ),
       });
       const translatedOutputPath = getTranslatedPathFromOutputIdentity(
         file.path,
@@ -1578,6 +1621,7 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       // Process all files in parallel with concurrency 3
     }
   } finally {
+    releaseInputPathClaims();
     for (const unregister of unregisterTranslationControllers) unregister();
     requestRateLimiterLease.release();
   }

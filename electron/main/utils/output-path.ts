@@ -4,6 +4,7 @@ import {
   subtitleOutputFormats,
   type SubtitleOutputFormat,
 } from "./subtitle-output";
+import { translationErrorCodes } from "../../shared/translation-error-codes";
 
 export interface TranslationOutputIdentity {
   format: SubtitleOutputFormat;
@@ -377,33 +378,56 @@ export function getSafeTranslationOutputIdentity({
   sourceName = path.basename(filePath),
   targetLanguage,
   identity,
+  isProtectedInputPath,
+  maximumCollisionAttempts = 100,
 }: {
   filePath: string;
   outputDirectory?: string;
   sourceName?: string;
   targetLanguage?: string;
   identity: TranslationOutputIdentity;
+  isProtectedInputPath?: (candidatePath: string) => boolean;
+  maximumCollisionAttempts?: number;
 }): TranslationOutputIdentity {
-  const outputPath = getTranslatedPathFromOutputIdentity(
-    filePath,
-    outputDirectory,
-    identity
-  );
-  if (getComparablePath(outputPath) !== getComparablePath(filePath)) {
-    return identity;
-  }
-
-  const sourceExtension = path.extname(sourceName);
-  const sourceBasename = path.basename(sourceName, sourceExtension);
   const suffix = getSubtitleLanguageSuffix(
     identity.format,
     targetLanguage,
     identity.detectedSourceLanguage
   );
-  return {
-    ...identity,
-    fileName: `${sourceBasename}.${suffix}.${getSubtitleOutputExtension(
-      identity.format
-    )}`,
-  };
+  const extension = getSubtitleOutputExtension(identity.format);
+  let safeIdentity = identity;
+
+  for (
+    let collisionAttempt = 0;
+    collisionAttempt <= maximumCollisionAttempts;
+    collisionAttempt += 1
+  ) {
+    const outputPath = getTranslatedPathFromOutputIdentity(
+      filePath,
+      outputDirectory,
+      safeIdentity
+    );
+    const collidesWithCurrentInput =
+      getComparablePath(outputPath) === getComparablePath(filePath);
+    if (
+      !collidesWithCurrentInput &&
+      !isProtectedInputPath?.(outputPath)
+    ) {
+      return safeIdentity;
+    }
+    if (collisionAttempt >= maximumCollisionAttempts) {
+      throw new Error(translationErrorCodes.outputPathConflict);
+    }
+
+    const currentBasename = path.basename(
+      safeIdentity.fileName,
+      path.extname(safeIdentity.fileName)
+    );
+    safeIdentity = {
+      ...safeIdentity,
+      fileName: `${currentBasename}.${suffix}.${extension}`,
+    };
+  }
+
+  throw new Error(translationErrorCodes.outputPathConflict);
 }

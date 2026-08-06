@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
+import { translationErrorCodes } from "../electron/shared/translation-error-codes.ts";
 import {
   createTranslationOutputIdentity,
   getLanguageCode,
@@ -285,6 +286,53 @@ test("repairs only identities that would overwrite the current input", () => {
       identity: dangerousIdentity,
     }),
     dangerousIdentity
+  );
+});
+
+test("repeats the language suffix until the output is not an active input", () => {
+  const filePath = path.join("subtitles", "movie.srt");
+  const protectedPaths = new Set([
+    path.resolve("subtitles", "movie.en.srt"),
+    path.resolve("subtitles", "movie.en.en.srt"),
+  ]);
+
+  assert.deepEqual(
+    getSafeTranslationOutputIdentity({
+      filePath,
+      sourceName: "movie.srt",
+      targetLanguage: "English",
+      identity: {
+        format: "srt-translation",
+        detectedSourceLanguage: "Chinese",
+        fileName: "movie.en.srt",
+      },
+      isProtectedInputPath: (candidatePath) =>
+        protectedPaths.has(path.resolve(candidatePath)),
+    }),
+    {
+      format: "srt-translation",
+      detectedSourceLanguage: "Chinese",
+      fileName: "movie.en.en.en.srt",
+    }
+  );
+});
+
+test("bounds repeated protected-input collisions with a clear error", () => {
+  assert.throws(
+    () =>
+      getSafeTranslationOutputIdentity({
+        filePath: path.join("subtitles", "movie.srt"),
+        sourceName: "movie.srt",
+        targetLanguage: "English",
+        identity: {
+          format: "srt-translation",
+          detectedSourceLanguage: "Chinese",
+          fileName: "movie.en.srt",
+        },
+        isProtectedInputPath: () => true,
+        maximumCollisionAttempts: 2,
+      }),
+    new Error(translationErrorCodes.outputPathConflict)
   );
 });
 

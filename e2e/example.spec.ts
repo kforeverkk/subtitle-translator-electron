@@ -1110,6 +1110,135 @@ test("bilingual translation still overwrites an unrelated existing destination",
   }
 });
 
+test("one task output cannot replace a later input in the same batch", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-cross-input-protection-")
+  );
+  const firstSourcePath = path.join(temporaryDirectory, "movie.srt");
+  const secondSourcePath = path.join(
+    temporaryDirectory,
+    "movie.en-zh.srt"
+  );
+  const firstOutputPath = path.join(
+    temporaryDirectory,
+    "movie.en-zh.en-zh.srt"
+  );
+  const secondOutputPath = path.join(
+    temporaryDirectory,
+    "movie.en-ja.srt"
+  );
+  const firstTaskId = "22222222-2222-4222-8222-222222222222";
+  const secondTaskId = "23232323-2323-4323-8323-232323232323";
+  const firstSourceText =
+    "1\n00:00:00,000 --> 00:00:01,000\n中文来源 A\n";
+  const secondSourceText =
+    "1\n00:00:00,000 --> 00:00:01,000\n日本語ソース B\n";
+  writeFileSync(firstSourcePath, firstSourceText, "utf8");
+  writeFileSync(secondSourcePath, secondSourceText, "utf8");
+  const mockServer = await startMockOpenAiServer({
+    getDetectedLanguage: (requestBodyText) =>
+      requestBodyText.includes("日本語ソース B") ? "Japanese" : "Chinese",
+    getStreamElements: (requestBodyText) =>
+      requestBodyText.includes("日本語ソース B")
+        ? ["English from B"]
+        : ["English from A"],
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    const progressByTask = await page.evaluate(
+      ({
+        apiHost,
+        firstSourcePath,
+        secondSourcePath,
+        firstTaskId,
+        secondTaskId,
+      }) =>
+        new Promise<Record<string, { status: string; error?: string }>>(
+          (resolve, reject) => {
+            const terminal = new Map<
+              string,
+              { status: string; error?: string }
+            >();
+            const taskIds = new Set([firstTaskId, secondTaskId]);
+            const removeListener = window.electronAPI.onBatchProgress(
+              (update) => {
+                if (
+                  taskIds.has(update.taskId) &&
+                  (update.status === "done" || update.status === "error")
+                ) {
+                  terminal.set(update.taskId, update);
+                  if (terminal.size === taskIds.size) {
+                    removeListener();
+                    resolve(Object.fromEntries(terminal));
+                  }
+                }
+              }
+            );
+            window.electronAPI
+              .translateBatch({
+                files: [
+                  {
+                    taskId: firstTaskId,
+                    path: firstSourcePath,
+                    name: "movie.srt",
+                  },
+                  {
+                    taskId: secondTaskId,
+                    path: secondSourcePath,
+                    name: "movie.en-zh.srt",
+                  },
+                ],
+                params: {
+                  apiKeys: ["test-key"],
+                  apiHost,
+                  model: "test-model",
+                  prompt:
+                    "Translate every cue to {{lang}}. {{additional}}",
+                  lang: "English",
+                  additional: "",
+                  temperature: 1,
+                  outputFormat: "srt-bilingual",
+                  assFonts: {
+                    translationFont: "",
+                    originalFont: "",
+                  },
+                  concurrency: 1,
+                  delay: 0,
+                  requestsPerMinute: 1_000,
+                  contextSize: 5,
+                },
+              })
+              .catch(reject);
+          }
+        ),
+      {
+        apiHost: mockServer.apiHost,
+        firstSourcePath,
+        secondSourcePath,
+        firstTaskId,
+        secondTaskId,
+      }
+    );
+
+    expect(progressByTask[firstTaskId]?.status).toBe("done");
+    expect(progressByTask[secondTaskId]?.status).toBe("done");
+    expect(readFileSync(secondSourcePath, "utf8")).toBe(secondSourceText);
+    expect(readFileSync(firstOutputPath, "utf8")).toContain(
+      "English from A"
+    );
+    expect(readFileSync(secondOutputPath, "utf8")).toContain(
+      "English from B"
+    );
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("subtitle output rename failure preserves the last valid file and checkpoint", async () => {
   const temporaryDirectory = mkdtempSync(
     path.join(tmpdir(), "subtitle-translator-output-rename-failure-")
