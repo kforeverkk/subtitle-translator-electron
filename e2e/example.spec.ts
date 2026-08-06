@@ -684,6 +684,8 @@ test("checkpoint save failures show a non-fatal recovery warning", async () => {
 });
 
 test("concurrent batches share one RPM budget for the same API account", async () => {
+  const configuredRequestDelayMs = 300;
+  const minimumObservedServerIntervalMs = 150;
   const temporaryDirectory = mkdtempSync(
     path.join(tmpdir(), "subtitle-translator-shared-rpm-")
   );
@@ -704,7 +706,12 @@ test("concurrent batches share one RPM budget for the same API account", async (
     app = await electron.launch({ args: [".", "--no-sandbox"] });
     const page = await app.firstWindow();
     await page.evaluate(
-      async ({ apiHost, englishSourcePath, frenchSourcePath }) => {
+      async ({
+        apiHost,
+        configuredRequestDelayMs,
+        englishSourcePath,
+        frenchSourcePath,
+      }) => {
         const createParams = (lang: string) => ({
           apiKeys: ["test-key"],
           apiHost,
@@ -716,7 +723,7 @@ test("concurrent batches share one RPM budget for the same API account", async (
           outputFormat: "srt-translation" as const,
           assFonts: { translationFont: "", originalFont: "" },
           concurrency: 1 as const,
-          delay: 120,
+          delay: configuredRequestDelayMs,
           requestsPerMinute: 1_000,
           contextSize: 5,
         });
@@ -746,6 +753,7 @@ test("concurrent batches share one RPM budget for the same API account", async (
       },
       {
         apiHost: mockServer.apiHost,
+        configuredRequestDelayMs,
         englishSourcePath,
         frenchSourcePath,
       }
@@ -758,7 +766,7 @@ test("concurrent batches share one RPM budget for the same API account", async (
     for (let index = 1; index < sortedRequestStarts.length; index++) {
       expect(
         sortedRequestStarts[index] - sortedRequestStarts[index - 1]
-      ).toBeGreaterThanOrEqual(90);
+      ).toBeGreaterThanOrEqual(minimumObservedServerIntervalMs);
     }
     expect(
       readFileSync(path.join(temporaryDirectory, "english-source.en.srt"), "utf8")
