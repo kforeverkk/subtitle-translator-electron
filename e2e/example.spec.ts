@@ -154,6 +154,10 @@ async function startMockOpenAiServer(options: {
     authorization?: string;
     bodyText: string;
   }) => void;
+  onResponseClose?: (response: {
+    bodyText: string;
+    completed: boolean;
+  }) => void;
 } = {}): Promise<{
   apiHost: string;
   close: () => Promise<void>;
@@ -180,6 +184,16 @@ async function startMockOpenAiServer(options: {
           Buffer.concat(requestChunks).toString("utf8")
         ) as { stream?: boolean };
         const requestBodyText = JSON.stringify(requestBody);
+        let responseCompleted = false;
+        response.once("finish", () => {
+          responseCompleted = true;
+        });
+        response.once("close", () => {
+          options.onResponseClose?.({
+            bodyText: requestBodyText,
+            completed: responseCompleted,
+          });
+        });
         options.onRequest?.({
           startedAt,
           authorization:
@@ -712,6 +726,159 @@ test("about follows the main window and wake events recreate the main window", a
     });
   } finally {
     await app.close();
+  }
+});
+
+test("closing the main window cancels translation and preserves its checkpoint for resume", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-window-close-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "window-close.srt");
+  const outputPath = path.join(temporaryDirectory, "window-close.en.srt");
+  const taskId = "12121212-1212-4212-8212-121212121212";
+  const checkpointPath = path.join(
+    temporaryDirectory,
+    `window-close.translation.${taskId.replaceAll("-", "")}.json`
+  );
+  writeFileSync(
+    sourcePath,
+    "1\n00:00:00,000 --> 00:00:01,000\n你好\n",
+    "utf8"
+  );
+
+  let delayTranslationResponse = true;
+  let abortedTranslationResponses = 0;
+  const requestBodies: string[] = [];
+  const mockServer = await startMockOpenAiServer({
+    streamDelayMs: (requestBodyText) =>
+      delayTranslationResponse && !isLanguageDetectionRequest(requestBodyText)
+        ? 2_000
+        : 0,
+    getStreamElements: () => ["Hello"],
+    onRequest: ({ bodyText }) => requestBodies.push(bodyText),
+    onResponseClose: ({ bodyText, completed }) => {
+      if (
+        !completed &&
+        !isLanguageDetectionRequest(bodyText) &&
+        !isContentAnalysisRequest(bodyText)
+      ) {
+        abortedTranslationResponses++;
+      }
+    },
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    await app.evaluate(({ BrowserWindow }) => {
+      const auxiliaryWindow = new BrowserWindow({ show: false });
+      (
+        globalThis as typeof globalThis & {
+          __subtitleTranslatorCloseTestAuxWindowId?: number;
+        }
+      ).__subtitleTranslatorCloseTestAuxWindowId = auxiliaryWindow.id;
+    });
+
+    await page.evaluate(
+      ({ apiHost, sourcePath, taskId }) => {
+        void window.electronAPI
+          .translateBatch({
+            files: [
+              {
+                taskId,
+                path: sourcePath,
+                name: "window-close.srt",
+              },
+            ],
+            params: {
+              apiKeys: ["test-key"],
+              apiHost,
+              model: "test-model",
+              prompt: "Translate every cue to {{lang}}. {{additional}}",
+              lang: "English",
+              additional: "",
+              temperature: 1,
+              outputFormat: "srt-translation",
+              assFonts: { translationFont: "", originalFont: "" },
+              concurrency: 1,
+              delay: 0,
+              requestsPerMinute: 1_000,
+              contextSize: 5,
+            },
+          })
+          .catch(() => undefined);
+      },
+      { apiHost: mockServer.apiHost, sourcePath, taskId }
+    );
+
+    await expect
+      .poll(
+        () =>
+          requestBodies.filter(
+            (body) =>
+              !isLanguageDetectionRequest(body) &&
+              !isContentAnalysisRequest(body)
+          ).length
+      )
+      .toBe(1);
+    await expect.poll(() => existsSync(checkpointPath)).toBe(true);
+
+    await app.evaluate(({ BrowserWindow }) => {
+      const closeTestGlobal = globalThis as typeof globalThis & {
+        __subtitleTranslatorCloseTestAuxWindowId?: number;
+      };
+      const auxiliaryId =
+        closeTestGlobal.__subtitleTranslatorCloseTestAuxWindowId;
+      const mainWindow = BrowserWindow.getAllWindows().find(
+        (window) =>
+          !window.isDestroyed() &&
+          window.id !== auxiliaryId &&
+          !window.webContents.getURL().includes("#/about")
+      );
+      if (!mainWindow) throw new Error("Main window not found");
+      mainWindow.close();
+    });
+
+    await expect.poll(() => abortedTranslationResponses).toBe(1);
+    expect(existsSync(checkpointPath)).toBe(true);
+    expect(existsSync(outputPath)).toBe(false);
+
+    delayTranslationResponse = false;
+    await wait(250);
+    const resumedPagePromise = app.waitForEvent("window");
+    await app.evaluate(({ app: electronApp }) => {
+      electronApp.emit("activate", {} as Electron.Event, false);
+    });
+    const resumedPage = await resumedPagePromise;
+    const result = await runSingleSubtitleTranslation(resumedPage, {
+      apiHost: mockServer.apiHost,
+      sourcePath,
+      taskId,
+    });
+
+    expect(result.status).toBe("done");
+    expect(readFileSync(outputPath, "utf8")).toContain("Hello");
+    expect(existsSync(checkpointPath)).toBe(false);
+
+    await app.evaluate(({ BrowserWindow }) => {
+      const closeTestGlobal = globalThis as typeof globalThis & {
+        __subtitleTranslatorCloseTestAuxWindowId?: number;
+      };
+      const auxiliaryId =
+        closeTestGlobal.__subtitleTranslatorCloseTestAuxWindowId;
+      if (auxiliaryId !== undefined) {
+        const auxiliaryWindow = BrowserWindow.fromId(auxiliaryId);
+        if (auxiliaryWindow && !auxiliaryWindow.isDestroyed()) {
+          auxiliaryWindow.close();
+        }
+      }
+      delete closeTestGlobal.__subtitleTranslatorCloseTestAuxWindowId;
+    });
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
   }
 });
 

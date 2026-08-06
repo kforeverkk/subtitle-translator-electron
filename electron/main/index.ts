@@ -94,6 +94,10 @@ import {
   writeFinalSubtitleOutput,
   writeSubtitleOutputAtomically,
 } from "./utils/subtitle-file-writer";
+import {
+  TranslationControllerRegistry,
+  sendWebContentsMessageSafely,
+} from "./utils/translation-lifecycle";
 import type {
   ParsedSubtitle,
   SubtitleCue,
@@ -168,7 +172,7 @@ type ApplicationLocale = z.infer<typeof applicationLocaleSchema>;
 let applicationLocale: ApplicationLocale | undefined;
 const activeTranslationPathClaims = new Set<string>();
 const activeTranslationInputPathClaimCounts = new Map<string, number>();
-const activeTranslationControllers = new Map<string, Set<AbortController>>();
+const translationControllerRegistry = new TranslationControllerRegistry();
 const requestRateLimiterRegistry = new RequestRateLimiterRegistry();
 
 const subtitleFileSchema = z
@@ -292,28 +296,6 @@ function isTrustedSender(frame: WebFrameMain | null): boolean {
 function assertTrustedSender(event: { senderFrame: WebFrameMain | null }): void {
   if (!isTrustedSender(event.senderFrame)) {
     throw new Error("Untrusted IPC sender");
-  }
-}
-
-function registerTranslationController(
-  taskId: string,
-  controller: AbortController
-): () => void {
-  const controllers = activeTranslationControllers.get(taskId) || new Set();
-  controllers.add(controller);
-  activeTranslationControllers.set(taskId, controllers);
-
-  return () => {
-    controllers.delete(controller);
-    if (controllers.size === 0) {
-      activeTranslationControllers.delete(taskId);
-    }
-  };
-}
-
-function cancelTranslation(taskId: string): void {
-  for (const controller of activeTranslationControllers.get(taskId) || []) {
-    controller.abort();
   }
 }
 
@@ -673,7 +655,7 @@ function readTranslationInput(
 }
 
 function sendProgress(sender: WebContents, progress: BatchProgress): void {
-  sender.send("batch-progress", progress);
+  sendWebContentsMessageSafely(sender, "batch-progress", progress);
 }
 
 function sendCheckpointSaveWarning(
@@ -918,6 +900,12 @@ function createWindow(): BrowserWindow {
   // win.webContents.openDevTools()
   configureWindowNavigation(nextWindow);
 
+  nextWindow.on("close", () => {
+    if (win === nextWindow) {
+      translationControllerRegistry.cancelAll();
+    }
+  });
+
   nextWindow.on("closed", () => {
     if (win !== nextWindow) return;
 
@@ -953,6 +941,10 @@ app.whenReady()
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+
+app.on("before-quit", () => {
+  translationControllerRegistry.cancelAll();
 });
 
 app.on("second-instance", () => {
@@ -1011,7 +1003,7 @@ ipcMain.handle("list-models", async (event, request: unknown) => {
 ipcMain.on("cancel-translation", (event, taskId: unknown) => {
   if (!isTrustedSender(event.senderFrame)) return;
   if (!isTranslationTaskId(taskId)) return;
-  cancelTranslation(taskId);
+  translationControllerRegistry.cancel(taskId);
 });
 
 ipcMain.handle("batch-translate", async (event, request: unknown) => {
@@ -1027,7 +1019,7 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
     contextSize: params.contextSize ?? DEFAULT_CONTEXT_SIZE,
   });
   if (
-    files.some((file) => activeTranslationControllers.has(file.taskId))
+    files.some((file) => translationControllerRegistry.has(file.taskId))
   ) {
     throw new Error("Translation task ID is already active");
   }
@@ -1037,7 +1029,7 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
     const controller = new AbortController();
     translationControllersByTaskId.set(file.taskId, controller);
     unregisterTranslationControllers.push(
-      registerTranslationController(file.taskId, controller)
+      translationControllerRegistry.register(file.taskId, controller)
     );
   }
   let requestRateLimiterLease: RequestRateLimiterLease;
