@@ -29,7 +29,7 @@ import {
   parseTranslationCache,
   readSubtitleSourceSnapshot,
   translateSubtitleChunk,
-  saveTranslated,
+  serializeTranslatedSubtitle,
   analyzeSubtitlesForContext,
   detectSubtitleLanguage,
   getSubtitleCues,
@@ -85,6 +85,10 @@ import {
   removeTranslationCheckpointArtifacts,
   type TranslationSourceFingerprint,
 } from "./utils/translation-checkpoint";
+import {
+  createSubtitleOutputWriter,
+  writeFinalSubtitleOutput,
+} from "./utils/subtitle-file-writer";
 import type {
   ParsedSubtitle,
   SubtitleCue,
@@ -1134,6 +1138,8 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         outputIdentity
       );
       outputPath = translatedOutputPath;
+      const subtitleOutputWriter =
+        createSubtitleOutputWriter(translatedOutputPath);
       let analysisData = shouldRestartTranslation
         ? undefined
         : input.analysis;
@@ -1254,12 +1260,14 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       const chunks = splitIntoChunk(subtitle, 20);
       if (chunks.length === 0) {
         abortSignal.throwIfAborted();
-        saveTranslated(
-          translatedOutputPath,
-          parsed,
-          params.outputFormat,
-          params.assFonts,
-          input.sourceExtension
+        await writeFinalSubtitleOutput(
+          subtitleOutputWriter,
+          serializeTranslatedSubtitle(
+            parsed,
+            params.outputFormat,
+            params.assFonts,
+            input.sourceExtension
+          )
         );
         await checkpointWriter.wait().catch((error: unknown) => {
           console.warn("Failed to finish translation checkpoint:", error);
@@ -1455,15 +1463,19 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
 
         // 寫入部分成果供即時預覽
         try {
-          saveTranslated(
-            translatedOutputPath,
-            parsed,
-            params.outputFormat,
-            params.assFonts,
-            input.sourceExtension
+          await subtitleOutputWriter.write(
+            serializeTranslatedSubtitle(
+              parsed,
+              params.outputFormat,
+              params.assFonts,
+              input.sourceExtension
+            )
           );
         } catch (e) {
-          console.warn("Failed to write partial translated file:", e);
+          console.warn(
+            `Failed to atomically write partial translated file: ${translatedOutputPath}`,
+            e
+          );
         }
 
         await persistCheckpoint();
@@ -1494,12 +1506,14 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
 
       // Final write
       abortSignal.throwIfAborted();
-      saveTranslated(
-        translatedOutputPath,
-        parsed,
-        params.outputFormat,
-        params.assFonts,
-        input.sourceExtension
+      await writeFinalSubtitleOutput(
+        subtitleOutputWriter,
+        serializeTranslatedSubtitle(
+          parsed,
+          params.outputFormat,
+          params.assFonts,
+          input.sourceExtension
+        )
       );
       await checkpointWriter.wait().catch((error: unknown) => {
         console.warn("Failed to finish translation checkpoint:", error);

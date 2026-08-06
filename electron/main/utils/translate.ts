@@ -529,13 +529,12 @@ function createAssSubtitleFromCues(events: SubtitleCue[]): AssSubtitle {
   };
 }
 
-function saveTranslated(
-  outputPath: string,
+function serializeTranslatedSubtitle(
   parsedSubtitle: ParsedSubtitle,
   outputFormat: SubtitleOutputFormat,
   assFonts: AssBilingualFontOptions = {},
   sourceFormat?: SubtitleFileExtension
-): void {
+): string {
   let newSubtitle = "";
   if (
     outputFormat === "srt-translation" ||
@@ -655,18 +654,7 @@ function saveTranslated(
     );
   }
 
-  // Atomic write to avoid renderer reading partial file during concurrent updates
-  const tmpPath = `${outputPath}.tmp`;
-  fs.writeFileSync(tmpPath, newSubtitle, "utf8");
-  try {
-    fs.renameSync(tmpPath, outputPath);
-  } catch {
-    // Fallback for filesystems where rename might not be atomic
-    fs.writeFileSync(outputPath, newSubtitle, "utf8");
-    try {
-      fs.unlinkSync(tmpPath);
-    } catch {}
-  }
+  return newSubtitle;
 }
 
 function validateSubtitleOutputCompatibility(
@@ -820,7 +808,7 @@ export {
   translateSubtitleChunk,
   parseSubtitle,
   parseSubtitleFile,
-  saveTranslated,
+  serializeTranslatedSubtitle,
   analyzeSubtitlesForContext,
   detectSubtitleLanguage,
   validateSubtitleOutputCompatibility,

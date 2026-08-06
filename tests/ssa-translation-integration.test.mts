@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { readFileSync } from "node:fs";
 import test from "node:test";
-import { randomUUID } from "node:crypto";
 import { parseSsaToAssConversionError } from "../electron/shared/ssa-to-ass-error.ts";
 import {
   createTranslationCacheDocument,
   parseSubtitle,
   parseTranslationCache,
-  saveTranslated,
+  serializeTranslatedSubtitle,
   validateSubtitleOutputCompatibility,
   type AssSubtitle,
 } from "../electron/main/utils/translate.ts";
@@ -76,23 +73,21 @@ test("keeps legacy SSA checkpoints readable but rejects lossy ASS output", () =>
 test("writes SSA input through the lossless ASS conversion path", () => {
   const parsed = parseSubtitle(source, "ssa") as AssSubtitle;
   parsed.events[0].data.translatedText = "译文";
-  const outputPath = path.join(tmpdir(), `ssa-output-${randomUUID()}.ass`);
-  try {
-    validateSubtitleOutputCompatibility(
-      parsed,
-      "ssa",
-      "ass-bilingual",
-      {}
-    );
-    saveTranslated(outputPath, parsed, "ass-bilingual", {}, "ssa");
-    const output = readFileSync(outputPath, "utf8");
-    assert.match(output, /\[V4\+ Styles\]/);
-    assert.match(output, /Times New Roman,28,&H20FFFFFF/);
-    assert.match(output, /{\\rST Translation 0}译文/);
-    assert.match(output, /Banner;20;0;10/);
-    assert.doesNotMatch(output, /Style: Default,Arial,20,/);
-  } finally {
-    rmSync(outputPath, { force: true });
-    rmSync(`${outputPath}.tmp`, { force: true });
-  }
+  validateSubtitleOutputCompatibility(
+    parsed,
+    "ssa",
+    "ass-bilingual",
+    {}
+  );
+  const output = serializeTranslatedSubtitle(
+    parsed,
+    "ass-bilingual",
+    {},
+    "ssa"
+  );
+  assert.match(output, /\[V4\+ Styles\]/);
+  assert.match(output, /Times New Roman,28,&H20FFFFFF/);
+  assert.match(output, /{\\rST Translation 0}译文/);
+  assert.match(output, /Banner;20;0;10/);
+  assert.doesNotMatch(output, /Style: Default,Arial,20,/);
 });

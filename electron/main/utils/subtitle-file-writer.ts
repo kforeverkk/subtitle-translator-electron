@@ -134,3 +134,11 @@ export function createSubtitleOutputWriter(
     wait: () => pending,
   };
 }
+
+export async function writeFinalSubtitleOutput(
+  writer: ReturnType<typeof createSubtitleOutputWriter>,
+  finalContent: string
+): Promise<void> {
+  await writer.wait().catch(() => undefined);
+  await writer.write(finalContent);
+}

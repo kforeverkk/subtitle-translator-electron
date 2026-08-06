@@ -12,6 +12,7 @@ import test from "node:test";
 import {
   WINDOWS_SUBTITLE_RENAME_RETRY_DELAYS_MS,
   createSubtitleOutputWriter,
+  writeFinalSubtitleOutput,
   writeSubtitleOutputAtomically,
 } from "../electron/main/utils/subtitle-file-writer.ts";
 
@@ -234,4 +235,47 @@ test("serial subtitle writer recovers after one failed write", async () => {
     "failed partial snapshot",
     "latest complete snapshot",
   ]);
+});
+
+test("final subtitle output waits for partial work and requires a fresh commit", async () => {
+  const committed: string[] = [];
+  let releasePartialWrite: (() => void) | undefined;
+  const partialGate = new Promise<void>((resolve) => {
+    releasePartialWrite = resolve;
+  });
+  const writer = createSubtitleOutputWriter(
+    "movie.en.srt",
+    async (_outputPath, content) => {
+      if (content === "partial snapshot") {
+        await partialGate;
+      }
+      committed.push(content);
+    }
+  );
+
+  const partialWrite = writer.write("partial snapshot");
+  const finalWrite = writeFinalSubtitleOutput(writer, "final snapshot");
+  await Promise.resolve();
+
+  assert.deepEqual(committed, []);
+  releasePartialWrite?.();
+  await Promise.all([partialWrite, finalWrite]);
+  assert.deepEqual(committed, ["partial snapshot", "final snapshot"]);
+});
+
+test("final subtitle output rejects when its mandatory commit fails", async () => {
+  const writer = createSubtitleOutputWriter(
+    "movie.en.srt",
+    async (_outputPath, content) => {
+      if (content === "final snapshot") {
+        throw createFileSystemError("EPERM");
+      }
+    }
+  );
+
+  await writer.write("partial snapshot");
+  await assert.rejects(
+    writeFinalSubtitleOutput(writer, "final snapshot"),
+    { code: "EPERM" }
+  );
 });

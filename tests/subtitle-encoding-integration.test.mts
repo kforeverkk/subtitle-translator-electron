@@ -9,7 +9,7 @@ import {
   getSubtitleCues,
   parseSubtitleFile,
   readSubtitleSourceSnapshot,
-  saveTranslated,
+  serializeTranslatedSubtitle,
   type SubtitleFileExtension,
 } from "../electron/main/utils/translate.ts";
 
@@ -121,7 +121,16 @@ test("writes translated output from a legacy source as strict UTF-8", () => {
 
     const parsed = parseSubtitleFile(sourcePath, "srt");
     getSubtitleCues(parsed)[0].data.translatedText = "Correct translation";
-    saveTranslated(outputPath, parsed, "srt-translation", {}, "srt");
+    writeFileSync(
+      outputPath,
+      serializeTranslatedSubtitle(
+        parsed,
+        "srt-translation",
+        {},
+        "srt"
+      ),
+      "utf8"
+    );
 
     const outputBytes = readFileSync(outputPath);
     const output = new TextDecoder("utf-8", { fatal: true }).decode(

@@ -11,6 +11,10 @@ import {
   subtitleTimestampToMilliseconds,
 } from "../electron/main/utils/subtitle-output.ts";
 import { clearSubtitleCueTranslations } from "../electron/main/utils/subtitle-chunks.ts";
+import {
+  parseSubtitle,
+  serializeTranslatedSubtitle,
+} from "../electron/main/utils/translate.ts";
 
 test("maps the selected output format to its file extension", () => {
   assert.equal(getSubtitleOutputExtension("srt-translation"), "srt");
@@ -77,6 +81,48 @@ test("formats translated-only and bilingual SRT text", () => {
     }),
     "Original\n譯文"
   );
+});
+
+test("serializes a complete translated SRT without writing a file", () => {
+  const parsed = parseSubtitle(
+    "1\n00:00:01,000 --> 00:00:02,500\nOriginal\n",
+    "srt"
+  );
+  parsed[0].data.translatedText = "译文";
+
+  assert.equal(
+    serializeTranslatedSubtitle(parsed, "srt-bilingual", {}, "srt"),
+    "1\n00:00:01,000 --> 00:00:02,500\n译文\nOriginal\n"
+  );
+});
+
+test("serializes a complete ASS subtitle without writing a file", () => {
+  const parsed = parseSubtitle(
+    `[Script Info]
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,20,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:02.50,Default,,0000,0000,0000,,Original
+`,
+    "ass"
+  );
+  if (Array.isArray(parsed)) assert.fail("expected ASS subtitle");
+  parsed.events[0].data.translatedText = "译文";
+
+  const output = serializeTranslatedSubtitle(
+    parsed,
+    "ass-bilingual",
+    {},
+    "ass"
+  );
+  assert.match(output, /\[V4\+ Styles\]/);
+  assert.match(output, /{\\rST Translation 0}译文/);
+  assert.match(output, /{\\rST Original 0}Original/);
 });
 
 test("renders pending SRT cues as a single original line", () => {
