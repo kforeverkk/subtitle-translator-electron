@@ -11,6 +11,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   WINDOWS_SUBTITLE_RENAME_RETRY_DELAYS_MS,
+  createSubtitleOutputWriter,
   writeSubtitleOutputAtomically,
 } from "../electron/main/utils/subtitle-file-writer.ts";
 
@@ -175,4 +176,62 @@ test("keeps the rename error when temporary cleanup also fails", async (t) => {
   );
 
   assert.equal(await readFile(outputPath, "utf8"), "last valid subtitle");
+});
+
+test("serial subtitle writer commits snapshots in enqueue order", async () => {
+  const started: string[] = [];
+  const completed: string[] = [];
+  let releaseFirstWrite: (() => void) | undefined;
+  const firstWriteGate = new Promise<void>((resolve) => {
+    releaseFirstWrite = resolve;
+  });
+  const writer = createSubtitleOutputWriter(
+    "movie.en.srt",
+    async (_outputPath, content) => {
+      started.push(content);
+      if (content === "snapshot A") {
+        await firstWriteGate;
+      }
+      completed.push(content);
+    }
+  );
+
+  const first = writer.write("snapshot A");
+  await Promise.resolve();
+  const second = writer.write("snapshot B");
+  await Promise.resolve();
+
+  assert.deepEqual(started, ["snapshot A"]);
+  releaseFirstWrite?.();
+  await Promise.all([first, second]);
+
+  assert.deepEqual(started, ["snapshot A", "snapshot B"]);
+  assert.deepEqual(completed, ["snapshot A", "snapshot B"]);
+});
+
+test("serial subtitle writer recovers after one failed write", async () => {
+  const attempted: string[] = [];
+  const writer = createSubtitleOutputWriter(
+    "movie.en.srt",
+    async (_outputPath, content) => {
+      attempted.push(content);
+      if (content === "failed partial snapshot") {
+        throw createFileSystemError("EPERM");
+      }
+    }
+  );
+
+  const failedWrite = writer.write("failed partial snapshot");
+  const recoveredWrite = writer.write("latest complete snapshot");
+
+  await assert.rejects(failedWrite, {
+    code: "EPERM",
+  });
+  await recoveredWrite;
+  await writer.wait();
+
+  assert.deepEqual(attempted, [
+    "failed partial snapshot",
+    "latest complete snapshot",
+  ]);
 });

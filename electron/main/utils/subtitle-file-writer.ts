@@ -27,6 +27,11 @@ export interface SubtitleAtomicWriteOptions {
   createTemporaryPath?: (outputPath: string) => string;
 }
 
+export type SubtitleOutputWrite = (
+  outputPath: string,
+  content: string
+) => Promise<void>;
+
 function getFileSystemErrorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error
     ? String(error.code)
@@ -105,4 +110,27 @@ export async function writeSubtitleOutputAtomically(
       });
     }
   }
+}
+
+export function createSubtitleOutputWriter(
+  outputPath: string,
+  writeOutput: SubtitleOutputWrite = writeSubtitleOutputAtomically
+): {
+  write: (content: string) => Promise<void>;
+  wait: () => Promise<void>;
+} {
+  let pending: Promise<void> = Promise.resolve();
+
+  const write = (content: string) => {
+    const current = pending
+      .catch(() => undefined)
+      .then(() => writeOutput(outputPath, content));
+    pending = current;
+    return current;
+  };
+
+  return {
+    write,
+    wait: () => pending,
+  };
 }
