@@ -987,6 +987,93 @@ test("an empty stream retries twice and succeeds on the third translation reques
   }
 });
 
+test("bilingual self-collision appends the language suffix and preserves the input", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-bilingual-self-collision-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "movie.en-zh.srt");
+  const outputPath = path.join(
+    temporaryDirectory,
+    "movie.en-zh.en-zh.srt"
+  );
+  const taskId = "19191919-1919-4919-8919-191919191919";
+  const sourceText =
+    "1\n00:00:00,000 --> 00:00:01,000\n你好\n";
+  writeFileSync(sourcePath, sourceText, "utf8");
+  const mockServer = await startMockOpenAiServer({
+    getDetectedLanguage: () => "Chinese",
+    getStreamElements: () => ["Hello"],
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    const progress = await runSingleSubtitleTranslation(page, {
+      apiHost: mockServer.apiHost,
+      sourcePath,
+      taskId,
+      outputFormat: "srt-bilingual",
+    });
+
+    expect(progress.status, progress.error).toBe("done");
+    expect(progress.outputPath).toBe(outputPath);
+    expect(readFileSync(sourcePath, "utf8")).toBe(sourceText);
+    expect(readFileSync(outputPath, "utf8")).toContain("Hello\n你好");
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("bilingual translation still overwrites an unrelated existing destination", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-existing-output-overwrite-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "movie.srt");
+  const outputPath = path.join(temporaryDirectory, "movie.en-zh.srt");
+  const taskId = "20202020-2020-4020-8020-202020202020";
+  writeFileSync(
+    sourcePath,
+    "1\n00:00:00,000 --> 00:00:01,000\n你好\n",
+    "utf8"
+  );
+  writeFileSync(outputPath, "unrelated existing subtitle", "utf8");
+  const mockServer = await startMockOpenAiServer({
+    getDetectedLanguage: () => "Chinese",
+    getStreamElements: () => ["Replacement translation"],
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    const progress = await runSingleSubtitleTranslation(page, {
+      apiHost: mockServer.apiHost,
+      sourcePath,
+      taskId,
+      outputFormat: "srt-bilingual",
+    });
+
+    expect(progress.status, progress.error).toBe("done");
+    expect(progress.outputPath).toBe(outputPath);
+    expect(readFileSync(outputPath, "utf8")).toContain(
+      "Replacement translation"
+    );
+    expect(readFileSync(outputPath, "utf8")).not.toContain(
+      "unrelated existing subtitle"
+    );
+    expect(existsSync(path.join(temporaryDirectory, "movie.en-zh.2.srt"))).toBe(
+      false
+    );
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("subtitle output rename failure preserves the last valid file and checkpoint", async () => {
   const temporaryDirectory = mkdtempSync(
     path.join(tmpdir(), "subtitle-translator-output-rename-failure-")

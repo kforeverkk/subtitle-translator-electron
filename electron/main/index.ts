@@ -45,6 +45,7 @@ import { subtitleOutputFormats } from "./utils/subtitle-output";
 import {
   createTranslationOutputIdentity,
   getReusableTranslationOutputIdentity,
+  getSafeTranslationOutputIdentity,
   getTranslatedPath,
   getTranslatedPathFromOutputIdentity,
 } from "./utils/output-path";
@@ -1133,6 +1134,13 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       const outputDirectory = getValidatedOutputDirectory(
         params.outputDirectory
       );
+      outputIdentity = getSafeTranslationOutputIdentity({
+        filePath: file.path,
+        outputDirectory,
+        sourceName: input.sourceName,
+        targetLanguage: params.lang,
+        identity: outputIdentity,
+      });
       const translatedOutputPath = getTranslatedPathFromOutputIdentity(
         file.path,
         outputDirectory,

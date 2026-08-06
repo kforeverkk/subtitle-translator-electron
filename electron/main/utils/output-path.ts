@@ -374,3 +374,56 @@ export function getTranslatedPathFromOutputIdentity(
     identity.fileName
   );
 }
+
+export function getSafeTranslationOutputIdentity({
+  filePath,
+  outputDirectory,
+  sourceName = path.basename(filePath),
+  targetLanguage,
+  identity,
+}: {
+  filePath: string;
+  outputDirectory?: string;
+  sourceName?: string;
+  targetLanguage?: string;
+  identity: TranslationOutputIdentity;
+}): TranslationOutputIdentity {
+  const outputPath = getTranslatedPathFromOutputIdentity(
+    filePath,
+    outputDirectory,
+    identity
+  );
+  if (getComparablePath(outputPath) !== getComparablePath(filePath)) {
+    return identity;
+  }
+
+  if (identity.format === "srt-translation") {
+    return {
+      ...identity,
+      fileName: path.basename(
+        getTranslatedPath(
+          filePath,
+          identity.format,
+          outputDirectory,
+          sourceName,
+          targetLanguage,
+          identity.detectedSourceLanguage
+        )
+      ),
+    };
+  }
+
+  const sourceExtension = path.extname(sourceName);
+  const sourceBasename = path.basename(sourceName, sourceExtension);
+  const suffix = getSubtitleLanguageSuffix(
+    identity.format,
+    targetLanguage,
+    identity.detectedSourceLanguage
+  );
+  return {
+    ...identity,
+    fileName: `${sourceBasename}.${suffix}.${getSubtitleOutputExtension(
+      identity.format
+    )}`,
+  };
+}

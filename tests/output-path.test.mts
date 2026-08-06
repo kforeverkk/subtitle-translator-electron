@@ -5,6 +5,7 @@ import {
   createTranslationOutputIdentity,
   getLanguageCode,
   getReusableTranslationOutputIdentity,
+  getSafeTranslationOutputIdentity,
   getSubtitleLanguageSuffix,
   getTranslatedPath,
   getTranslatedPathFromOutputIdentity,
@@ -145,6 +146,121 @@ test("never writes translated-only output back to the input subtitle", () => {
       "English"
     ),
     path.join("subtitles", "movie.en.srt")
+  );
+});
+
+test("keeps bilingual output beside the input without overwriting it", () => {
+  const cases = [
+    {
+      sourceName: "movie.en-zh.srt",
+      format: "srt-bilingual" as const,
+      detectedSourceLanguage: "Chinese",
+      targetLanguage: "English",
+      expected: "movie.en-zh.en-zh.srt",
+    },
+    {
+      sourceName: "movie.zh-en.srt",
+      format: "srt-original-translation" as const,
+      detectedSourceLanguage: "Chinese",
+      targetLanguage: "English",
+      expected: "movie.zh-en.zh-en.srt",
+    },
+    {
+      sourceName: "movie.en-zh.ass",
+      format: "ass-bilingual" as const,
+      detectedSourceLanguage: "Chinese",
+      targetLanguage: "English",
+      expected: "movie.en-zh.en-zh.ass",
+    },
+    {
+      sourceName: "movie.zh-en.ass",
+      format: "ass-original-translation" as const,
+      detectedSourceLanguage: "Chinese",
+      targetLanguage: "English",
+      expected: "movie.zh-en.zh-en.ass",
+    },
+    {
+      sourceName: "movie.translated-original.srt",
+      format: "srt-bilingual" as const,
+      detectedSourceLanguage: "Unknown source",
+      targetLanguage: "Unknown target",
+      expected:
+        "movie.translated-original.translated-original.srt",
+    },
+    {
+      sourceName: "movie.original-translated.ass",
+      format: "ass-original-translation" as const,
+      detectedSourceLanguage: "Unknown source",
+      targetLanguage: "Unknown target",
+      expected:
+        "movie.original-translated.original-translated.ass",
+    },
+  ];
+
+  for (const item of cases) {
+    const filePath = path.join("subtitles", item.sourceName);
+    const identity = {
+      format: item.format,
+      detectedSourceLanguage: item.detectedSourceLanguage,
+      fileName: item.sourceName,
+    };
+
+    assert.equal(
+      getSafeTranslationOutputIdentity({
+        filePath,
+        sourceName: item.sourceName,
+        targetLanguage: item.targetLanguage,
+        identity,
+      }).fileName,
+      item.expected,
+      item.sourceName
+    );
+  }
+});
+
+test("repairs only identities that would overwrite the current input", () => {
+  const filePath = path.join("subtitles", "movie.en.srt");
+  const dangerousIdentity = {
+    format: "srt-translation" as const,
+    detectedSourceLanguage: "English",
+    fileName: "movie.en.srt",
+  };
+  const safeIdentity = {
+    format: "srt-bilingual" as const,
+    detectedSourceLanguage: "Chinese",
+    fileName: "movie.en-zh.srt",
+  };
+
+  assert.deepEqual(
+    getSafeTranslationOutputIdentity({
+      filePath,
+      sourceName: "movie.en.srt",
+      targetLanguage: "English",
+      identity: dangerousIdentity,
+    }),
+    {
+      ...dangerousIdentity,
+      fileName: "movie.translated.en.srt",
+    }
+  );
+  assert.equal(
+    getSafeTranslationOutputIdentity({
+      filePath,
+      sourceName: "movie.en.srt",
+      targetLanguage: "English",
+      identity: safeIdentity,
+    }),
+    safeIdentity
+  );
+  assert.equal(
+    getSafeTranslationOutputIdentity({
+      filePath,
+      outputDirectory: path.join("other-output"),
+      sourceName: "movie.en.srt",
+      targetLanguage: "English",
+      identity: dangerousIdentity,
+    }),
+    dangerousIdentity
   );
 });
 
