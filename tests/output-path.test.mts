@@ -20,6 +20,58 @@ test("maps supported language names and codes", () => {
   assert.equal(getLanguageCode("to"), undefined);
 });
 
+test("maps the extended common subtitle languages and aliases", () => {
+  const cases: Array<{
+    code: string;
+    aliases: string[];
+  }> = [
+    { code: "nl", aliases: ["Dutch", "Nederlands", "荷兰语", "荷蘭語"] },
+    { code: "pl", aliases: ["Polish", "Polski", "波兰语", "波蘭語"] },
+    { code: "tr", aliases: ["Turkish", "Türkçe", "Turkce", "土耳其语", "土耳其語"] },
+    {
+      code: "vi",
+      aliases: ["Vietnamese", "Tiếng Việt", "Tieng Viet", "越南语", "越南語"],
+    },
+    { code: "th", aliases: ["Thai", "ไทย", "泰语", "泰語"] },
+    {
+      code: "id",
+      aliases: [
+        "Indonesian",
+        "Bahasa Indonesia",
+        "印度尼西亚语",
+        "印度尼西亞語",
+        "印尼语",
+        "印尼語",
+        "in",
+      ],
+    },
+    {
+      code: "uk",
+      aliases: ["Ukrainian", "Українська", "乌克兰语", "烏克蘭語"],
+    },
+    {
+      code: "he",
+      aliases: ["Hebrew", "עברית", "希伯来语", "希伯來語", "iw"],
+    },
+    { code: "cs", aliases: ["Czech", "Čeština", "Cestina", "捷克语", "捷克語"] },
+    { code: "sv", aliases: ["Swedish", "Svenska", "瑞典语", "瑞典語"] },
+    { code: "da", aliases: ["Danish", "Dansk", "丹麦语", "丹麥語"] },
+    { code: "fi", aliases: ["Finnish", "Suomi", "芬兰语", "芬蘭語"] },
+    { code: "no", aliases: ["Norwegian", "Norsk", "挪威语", "挪威語"] },
+    { code: "el", aliases: ["Greek", "Ελληνικά", "希腊语", "希臘語"] },
+    { code: "hu", aliases: ["Hungarian", "Magyar", "匈牙利语", "匈牙利語"] },
+    { code: "ro", aliases: ["Romanian", "Română", "Romana", "罗马尼亚语", "羅馬尼亞語"] },
+  ];
+
+  for (const { code, aliases } of cases) {
+    assert.equal(getLanguageCode(code), code);
+    assert.equal(getLanguageCode(`${code}-XX`), code);
+    for (const alias of aliases) {
+      assert.equal(getLanguageCode(alias), code, alias);
+    }
+  }
+});
+
 test("names translated-only output with the target language", () => {
   assert.equal(getSubtitleLanguageSuffix("srt-translation", "English"), "en");
   assert.equal(
