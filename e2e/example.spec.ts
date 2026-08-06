@@ -6,6 +6,7 @@ import {
 } from "@playwright/test";
 import { createHash } from "node:crypto";
 import {
+  existsSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -124,6 +125,10 @@ async function startMockOpenAiServer(options: {
     errorMessage?: string;
     responseHeaders?: Record<string, string>;
   };
+  getDetectedLanguage?: (
+    requestBodyText: string,
+    requestNumber: number
+  ) => string;
   onRequest?: (request: {
     startedAt: number;
     authorization?: string;
@@ -134,6 +139,7 @@ async function startMockOpenAiServer(options: {
   close: () => Promise<void>;
 }> {
   let streamRequestCount = 0;
+  let languageRequestCount = 0;
   const server = createServer((request, response) => {
     void (async () => {
       if (request.url === "/v1/models") {
@@ -244,6 +250,7 @@ async function startMockOpenAiServer(options: {
           return;
         }
 
+        languageRequestCount++;
         response.setHeader("Content-Type", "application/json");
         response.end(
           JSON.stringify({
@@ -256,7 +263,13 @@ async function startMockOpenAiServer(options: {
                 index: 0,
                 message: {
                   role: "assistant",
-                  content: JSON.stringify({ language: "Chinese" }),
+                  content: JSON.stringify({
+                    language:
+                      options.getDetectedLanguage?.(
+                        requestBodyText,
+                        languageRequestCount
+                      ) ?? "Chinese",
+                  }),
                 },
                 finish_reason: "stop",
               },
@@ -308,10 +321,12 @@ async function runSingleSubtitleTranslation(
     apiHost,
     sourcePath,
     taskId,
+    outputFormat = "srt-translation",
   }: {
     apiHost: string;
     sourcePath: string;
     taskId: string;
+    outputFormat?: "srt-translation" | "srt-bilingual";
   }
 ): Promise<{
   status: string;
@@ -319,7 +334,7 @@ async function runSingleSubtitleTranslation(
   outputPath?: string;
 }> {
   return page.evaluate(
-    ({ apiHost, sourcePath, taskId }) =>
+    ({ apiHost, sourcePath, taskId, outputFormat }) =>
       new Promise<{
         status: string;
         error?: string;
@@ -345,7 +360,7 @@ async function runSingleSubtitleTranslation(
               lang: "English",
               additional: "",
               temperature: 1,
-              outputFormat: "srt-translation",
+              outputFormat,
               assFonts: { translationFont: "", originalFont: "" },
               concurrency: 1,
               delay: 0,
@@ -355,7 +370,7 @@ async function runSingleSubtitleTranslation(
           })
           .catch(reject);
       }),
-    { apiHost, sourcePath, taskId }
+    { apiHost, sourcePath, taskId, outputFormat }
   );
 }
 
@@ -939,6 +954,202 @@ test("three empty streams fail only after the third request and keep the checkpo
         }
       ).task?.id
     ).toBe(taskId);
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("bilingual resume keeps its first detected-language filename", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-bilingual-resume-name-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "movie.srt");
+  const taskId = "16161616-1616-4616-8616-161616161616";
+  const checkpointPath = path.join(
+    temporaryDirectory,
+    `movie.translation.${taskId.replaceAll("-", "")}.json`
+  );
+  const sourceText = Array.from({ length: 21 }, (_, index) => {
+    const startSecond = String(index).padStart(2, "0");
+    const endSecond = String(index + 1).padStart(2, "0");
+    return `${index + 1}\n00:00:${startSecond},000 --> 00:00:${endSecond},000\n原文 ${index + 1}\n`;
+  }).join("\n");
+  writeFileSync(sourcePath, sourceText, "utf8");
+
+  let languageDetectionRequests = 0;
+  const mockServer = await startMockOpenAiServer({
+    onRequest: ({ bodyText }) => {
+      if (JSON.parse(bodyText).stream !== true) {
+        languageDetectionRequests++;
+      }
+    },
+    getDetectedLanguage: (_bodyText, requestNumber) =>
+      requestNumber === 1 ? "Chinese" : "Japanese",
+    getStreamResponse: (_bodyText, requestNumber) => {
+      if (requestNumber === 1) {
+        return {
+          elements: Array.from(
+            { length: 20 },
+            (_, index) => `Translated ${index + 1}`
+          ),
+        };
+      }
+      if (requestNumber <= 4) return { empty: true };
+      return { elements: ["Translated 21"] };
+    },
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    let page = await app.firstWindow();
+    const failedProgress = await runSingleSubtitleTranslation(page, {
+      apiHost: mockServer.apiHost,
+      sourcePath,
+      taskId,
+      outputFormat: "srt-bilingual",
+    });
+
+    expect(failedProgress.status).toBe("error");
+    expect(languageDetectionRequests).toBe(1);
+    expect(existsSync(path.join(temporaryDirectory, "movie.en-zh.srt"))).toBe(
+      true
+    );
+    expect(
+      (
+        JSON.parse(readFileSync(checkpointPath, "utf8")) as {
+          output?: {
+            format?: string;
+            detectedSourceLanguage?: string;
+            fileName?: string;
+          };
+        }
+      ).output
+    ).toEqual({
+      format: "srt-bilingual",
+      detectedSourceLanguage: "Chinese",
+      fileName: "movie.en-zh.srt",
+    });
+
+    await app.close();
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    page = await app.firstWindow();
+    const resumedProgress = await runSingleSubtitleTranslation(page, {
+      apiHost: mockServer.apiHost,
+      sourcePath,
+      taskId,
+      outputFormat: "srt-bilingual",
+    });
+
+    expect(resumedProgress.status, resumedProgress.error).toBe("done");
+    expect(languageDetectionRequests).toBe(1);
+    const completedOutput = readFileSync(
+      path.join(temporaryDirectory, "movie.en-zh.srt"),
+      "utf8"
+    );
+    expect(completedOutput).toContain("Translated 1");
+    expect(completedOutput).toContain("Translated 21");
+    expect(existsSync(path.join(temporaryDirectory, "movie.en-ja.srt"))).toBe(
+      false
+    );
+    expect(
+      existsSync(path.join(temporaryDirectory, "movie.en-original.srt"))
+    ).toBe(false);
+    expect(existsSync(checkpointPath)).toBe(false);
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("legacy checkpoint backfills a stable bilingual output identity", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-bilingual-backfill-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "legacy.srt");
+  const taskId = "17171717-1717-4717-8717-171717171717";
+  const checkpointPath = path.join(
+    temporaryDirectory,
+    `legacy.translation.${taskId.replaceAll("-", "")}.json`
+  );
+  const sourceText = "1\n00:00:00,000 --> 00:00:01,000\n你好\n";
+  writeFileSync(sourcePath, sourceText, "utf8");
+  const sourceInfo = statSync(sourcePath);
+  const apiPrompt = "Translate every cue to {{lang}}. {{additional}}";
+  let languageDetectionRequests = 0;
+  const mockServer = await startMockOpenAiServer({
+    onRequest: ({ bodyText }) => {
+      if (JSON.parse(bodyText).stream !== true) {
+        languageDetectionRequests++;
+      }
+    },
+    getStreamResponse: () => ({ empty: true }),
+  });
+  writeFileSync(
+    checkpointPath,
+    JSON.stringify({
+      version: 3,
+      format: "srt",
+      source: {
+        name: "legacy.srt",
+        fingerprint: {
+          size: sourceInfo.size,
+          mtimeMs: sourceInfo.mtimeMs,
+        },
+      },
+      translation: {
+        configFingerprint: createTestTranslationConfigFingerprint({
+          apiHost: mockServer.apiHost,
+          model: "test-model",
+          prompt: apiPrompt,
+          lang: "English",
+          additional: "",
+          temperature: 1,
+          contextSize: 5,
+        }),
+      },
+      task: { id: taskId },
+      subtitle: [
+        {
+          type: "cue",
+          data: { start: 0, end: 1_000, text: "你好" },
+        },
+      ],
+    }),
+    "utf8"
+  );
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    const progress = await runSingleSubtitleTranslation(page, {
+      apiHost: mockServer.apiHost,
+      sourcePath,
+      taskId,
+      outputFormat: "srt-bilingual",
+    });
+
+    expect(progress.status).toBe("error");
+    expect(languageDetectionRequests).toBe(1);
+    expect(
+      (
+        JSON.parse(readFileSync(checkpointPath, "utf8")) as {
+          output?: {
+            format?: string;
+            detectedSourceLanguage?: string;
+            fileName?: string;
+          };
+        }
+      ).output
+    ).toEqual({
+      format: "srt-bilingual",
+      detectedSourceLanguage: "Chinese",
+      fileName: "legacy.en-zh.srt",
+    });
   } finally {
     await app?.close();
     await mockServer.close();
