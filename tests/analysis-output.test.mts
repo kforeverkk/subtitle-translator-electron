@@ -47,6 +47,29 @@ test("keeps an explicit glossary section when no terms are found", () => {
   );
 });
 
+test("requires both a non-empty plot summary and a glossary field", () => {
+  assert.equal(
+    subtitleAnalysisSchema.safeParse({
+      plotSummary: "A complete summary.",
+    }).success,
+    false
+  );
+  assert.equal(
+    subtitleAnalysisSchema.safeParse({
+      plotSummary: "",
+      glossary: [],
+    }).success,
+    false
+  );
+  assert.equal(
+    subtitleAnalysisSchema.safeParse({
+      plotSummary: "A complete summary.",
+      glossary: [],
+    }).success,
+    true
+  );
+});
+
 test("rejects incomplete glossary entries", () => {
   const result = subtitleAnalysisSchema.safeParse({
     plotSummary: "A complete summary.",

@@ -21,6 +21,8 @@ const translationErrorMessageIds: Record<string, string> = {
   [translationErrorCodes.outputPathConflict]: "error.outputPathConflict",
   [translationErrorCodes.repetitiveModelOutput]: "error.repetitiveModelOutput",
   [translationErrorCodes.incompleteModelOutput]: "error.incompleteModelOutput",
+  [translationErrorCodes.requiredAnalysisCheckpoint]:
+    "error.requiredAnalysisCheckpoint",
 };
 
 const conversionReasonMessageIds: Record<SsaToAssConversionReason, string> = {

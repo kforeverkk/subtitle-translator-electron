@@ -759,7 +759,13 @@ Analyze subtitle samples and return one JSON object with exactly these propertie
     throw new Error(translationErrorCodes.incompleteModelOutput);
   }
 
-  return formatSubtitleAnalysis(subtitleAnalysisSchema.parse(result.output));
+  const parsedAnalysis = subtitleAnalysisSchema.safeParse(result.output);
+  if (!parsedAnalysis.success) {
+    throw new Error(
+      `${translationErrorCodes.incompleteModelOutput}: invalid content analysis output`
+    );
+  }
+  return formatSubtitleAnalysis(parsedAnalysis.data);
 }
 
 async function detectSubtitleLanguage(

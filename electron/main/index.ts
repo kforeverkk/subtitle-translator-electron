@@ -48,7 +48,7 @@ import {
   getTranslatedPath,
   getTranslatedPathFromOutputIdentity,
 } from "./utils/output-path";
-import { shouldAnalyzeSubtitles } from "./utils/subtitle-sampling";
+import { getSubtitleAnalysisPlan } from "./utils/subtitle-sampling";
 import { fetchAvailableModels } from "./utils/models";
 import { getFirstValidApiKey } from "./utils/api-account";
 import {
@@ -152,7 +152,7 @@ const allowedExternalHosts = new Set([
   "www.github.com",
   "www.buymeacoffee.com",
 ]);
-const MIN_CUES_FOR_CONTEXT_ANALYSIS = 40;
+const MIN_CUES_FOR_CONTEXT_ANALYSIS = 20;
 const DEFAULT_CONTEXT_SIZE = 5;
 const applicationLocaleSchema = z.enum(["en-US", "zh-TW", "zh-CN"]);
 type ApplicationLocale = z.infer<typeof applicationLocaleSchema>;
@@ -1054,7 +1054,21 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       );
       const parsed = input.parsed;
       const subtitle = getSubtitleCues(parsed);
-      if (input.shouldRestartTranslation) {
+      const totalCues = subtitle.length;
+      const checkpointCompletedCues =
+        subtitle.filter(isSubtitleCueComplete).length;
+      const initialAnalysisPlan = getSubtitleAnalysisPlan(
+        input.analysis,
+        totalCues,
+        checkpointCompletedCues,
+        MIN_CUES_FOR_CONTEXT_ANALYSIS
+      );
+      const shouldRestartForMissingAnalysis =
+        !input.shouldRestartTranslation &&
+        initialAnalysisPlan.shouldRestartForMissingAnalysis;
+      const shouldRestartTranslation =
+        input.shouldRestartTranslation || shouldRestartForMissingAnalysis;
+      if (shouldRestartTranslation) {
         clearSubtitleCueTranslations(subtitle);
       }
       validateSubtitleOutputCompatibility(
@@ -1063,7 +1077,6 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         params.outputFormat,
         params.assFonts
       );
-      const totalCues = subtitle.length;
       let completedCues = subtitle.filter(isSubtitleCueComplete).length;
 
       // 建立原始索引對照，供後續「上下文視窗」策略使用
@@ -1121,14 +1134,18 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         outputIdentity
       );
       outputPath = translatedOutputPath;
-      let analysisData = input.analysis;
+      let analysisData = shouldRestartTranslation
+        ? undefined
+        : input.analysis;
       analysisCache.delete(file.taskId);
       const checkpointPath = input.checkpointPath;
       const checkpointSourcePath = input.checkpointSourcePath;
       const ownedBackupPaths = new Set<string>();
-      let pendingCheckpointSourcePath = input.shouldPreserveCheckpointSource
-        ? checkpointSourcePath
-        : undefined;
+      let pendingCheckpointSourcePath =
+        input.shouldPreserveCheckpointSource ||
+        shouldRestartForMissingAnalysis
+          ? checkpointSourcePath
+          : undefined;
       releasePathClaims = claimTranslationPaths(
         [...new Set([
           translatedOutputPath,
@@ -1263,11 +1280,13 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       }
 
       // Build analysis context (plot summary + glossary) and attach to all requests
-      const shouldAnalyze = shouldAnalyzeSubtitles(
+      const analysisPlan = getSubtitleAnalysisPlan(
         analysisData,
-        allTexts.length,
+        totalCues,
+        completedCues,
         MIN_CUES_FOR_CONTEXT_ANALYSIS
       );
+      const shouldAnalyze = analysisPlan.shouldAnalyze;
       if (shouldAnalyze) {
         abortSignal.throwIfAborted();
         sendProgress(event.sender, {
@@ -1289,50 +1308,48 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         }[Context]\n${analysisData}`;
         analysisCache.set(file.taskId, analysisData);
       } else if (shouldAnalyze) {
-        try {
-          const analysis = await retryTranslation(
-            (texts) =>
-              analyzeSubtitlesForContext(texts, {
-                apiKeys: params.apiKeys || [],
-                apiHost: params.apiHost || "https://api.openai.com/v1",
-                model: params.model || "",
-                lang: params.lang || "",
-                temperature: 0.3,
-                requestRateLimiter,
-                abortSignal,
-              }),
-            allTexts,
-            {
-              delayMs: params.delay,
+        const analysis = await retryTranslation(
+          (texts) =>
+            analyzeSubtitlesForContext(texts, {
+              apiKeys: params.apiKeys || [],
+              apiHost: params.apiHost || "https://api.openai.com/v1",
+              model: params.model || "",
+              lang: params.lang || "",
+              temperature: 0.3,
+              requestRateLimiter,
               abortSignal,
-            }
-          );
-          if (analysis) {
-            combinedAdditional = `${
-              combinedAdditional ? combinedAdditional + "\n\n" : ""
-            }[Context]\n${analysis}`;
-
-            analysisData = analysis;
-            analysisCache.set(file.taskId, analysis);
-            await persistCheckpoint();
-            sendProgress(event.sender, {
-              taskId: file.taskId,
-              filePath: file.path,
-              progress: totalCues > 0 ? (completedCues / totalCues) * 100 : 0,
-              status: "analyzing",
-              totalCues,
-              currentCue: completedCues,
-              analysis,
-              outputPath: translatedOutputPath,
-            });
+            }),
+          allTexts,
+          {
+            delayMs: params.delay,
+            abortSignal,
           }
-        } catch (analysisErr) {
-          abortSignal.throwIfAborted();
-          console.warn(
-            "Context analysis failed, continue without it:",
-            analysisErr
+        );
+        analysisData = analysis;
+        const savedAnalysis = await persistCheckpoint();
+        if (!savedAnalysis) {
+          throw new Error(
+            translationErrorCodes.requiredAnalysisCheckpoint
           );
         }
+        analysisCache.set(file.taskId, analysis);
+        combinedAdditional = `${
+          combinedAdditional ? combinedAdditional + "\n\n" : ""
+        }[Context]\n${analysis}`;
+        sendProgress(event.sender, {
+          taskId: file.taskId,
+          filePath: file.path,
+          progress: totalCues > 0 ? (completedCues / totalCues) * 100 : 0,
+          status: "analyzing",
+          totalCues,
+          currentCue: completedCues,
+          analysis,
+          outputPath: translatedOutputPath,
+        });
+      }
+
+      if (analysisPlan.requiresAnalysis && !analysisData?.trim()) {
+        throw new Error(translationErrorCodes.incompleteModelOutput);
       }
 
       abortSignal.throwIfAborted();

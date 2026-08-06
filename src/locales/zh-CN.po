@@ -999,6 +999,11 @@ msgid "error.incompleteModelOutput"
 msgstr "模型在完成翻译前停止输出。请重试或改用其他模型。"
 
 #. js-lingui-explicit-id
+#: src/i18n-messages.ts
+msgid "error.requiredAnalysisCheckpoint"
+msgstr "必要的内容分析结果无法保存，因此字幕翻译尚未开始。请检查字幕目录的写入权限后重试。"
+
+#. js-lingui-explicit-id
 #: src/i18n-messages.ts:47
 msgid "prompt.description"
 msgstr "使用 ChatGPT 时所使用的咒语，你可以在此更改咒语，另外 <code>&#123;&#123;lang&#125;&#125;</code> 用于指定语言，<code>&#123;&#123;additional&#125;&#125;</code> 用于附加备注，上述字段将于翻译时自动带入内容，修改咒语时请务必保留这些字段。"

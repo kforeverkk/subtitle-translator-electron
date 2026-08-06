@@ -133,6 +133,7 @@ export const messages = {
   "error.outputPathConflict": defineMessage({ id: "error.outputPathConflict", message: "Multiple tasks would write to the same output file. Choose separate output folders or rename one of the source files." }),
   "error.repetitiveModelOutput": defineMessage({ id: "error.repetitiveModelOutput", message: "Translation stopped because the model began repeating its output abnormally." }),
   "error.incompleteModelOutput": defineMessage({ id: "error.incompleteModelOutput", message: "The model stopped before producing a complete translation. Try again or choose a different model." }),
+  "error.requiredAnalysisCheckpoint": defineMessage({ id: "error.requiredAnalysisCheckpoint", message: "The required content analysis could not be saved, so subtitle translation did not start. Check write access to the subtitle folder and try again." }),
   "task.sourceFolder": defineMessage({ id: "task.sourceFolder", message: "Source folder" }),
   "task.status.pending": defineMessage({ id: "task.status.pending", message: "Pending" }),
   "task.status.analyzing": defineMessage({ id: "task.status.analyzing", message: "Analyzing" }),

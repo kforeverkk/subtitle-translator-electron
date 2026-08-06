@@ -999,6 +999,11 @@ msgid "error.incompleteModelOutput"
 msgstr "The model stopped before producing a complete translation. Try again or choose a different model."
 
 #. js-lingui-explicit-id
+#: src/i18n-messages.ts
+msgid "error.requiredAnalysisCheckpoint"
+msgstr "The required content analysis could not be saved, so subtitle translation did not start. Check write access to the subtitle folder and try again."
+
+#. js-lingui-explicit-id
 #: src/i18n-messages.ts:47
 msgid "prompt.description"
 msgstr "The prompt used with ChatGPT. You can modify the prompt here. Additionally, <code>&#123;&#123;lang&#125;&#125;</code> is used to specify the language, and <code>&#123;&#123;additional&#125;&#125;</code> is used for additional notes. These fields will be automatically filled in during translation. When modifying the prompt, please make sure to keep these fields intact."

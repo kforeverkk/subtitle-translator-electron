@@ -9,6 +9,8 @@ import { getLocalizedTranslationError } from "../src/utils/translation-error.ts"
 
 const messages: Record<string, string> = {
   "error.invalidCheckpoint": "检查点无效。",
+  "error.requiredAnalysisCheckpoint":
+    "必要的内容分析结果无法保存，字幕翻译尚未开始。请检查字幕目录的写入权限后重试。",
   "error.subtitleEncoding":
     "无法可靠识别该字幕的文本编码。请使用记事本、Notepad++ 等工具将字幕转换为 UTF-8 编码后重试。",
   "error.ssaToAssConversion":
@@ -70,6 +72,17 @@ test("explains how to recover from an unrecognized subtitle encoding", () => {
       t
     ),
     "无法可靠识别该字幕的文本编码。请使用记事本、Notepad++ 等工具将字幕转换为 UTF-8 编码后重试。"
+  );
+});
+
+test("explains that translation did not start when required analysis cannot be saved", () => {
+  assert.equal(
+    getLocalizedTranslationError(
+      new Error(translationErrorCodes.requiredAnalysisCheckpoint),
+      "fallback",
+      t
+    ),
+    "必要的内容分析结果无法保存，字幕翻译尚未开始。请检查字幕目录的写入权限后重试。"
   );
 });
 
