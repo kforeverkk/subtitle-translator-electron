@@ -1081,6 +1081,8 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
     if (!abortSignal) return;
     let outputPath: string | undefined;
     let releasePathClaims: (() => void) | undefined;
+    let totalCues = 0;
+    let completedCues = 0;
     try {
       abortSignal.throwIfAborted();
       if (blockedInputTaskIds.has(file.taskId)) {
@@ -1093,7 +1095,7 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       );
       const parsed = input.parsed;
       const subtitle = getSubtitleCues(parsed);
-      const totalCues = subtitle.length;
+      totalCues = subtitle.length;
       const checkpointCompletedCues =
         subtitle.filter(isSubtitleCueComplete).length;
       const initialAnalysisPlan = getSubtitleAnalysisPlan(
@@ -1116,7 +1118,7 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
         params.outputFormat,
         params.assFonts
       );
-      let completedCues = subtitle.filter(isSubtitleCueComplete).length;
+      completedCues = subtitle.filter(isSubtitleCueComplete).length;
 
       // 建立原始索引對照，供後續「上下文視窗」策略使用
       const indexMap = new Map<SubtitleCue, number>();
@@ -1600,13 +1602,17 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
     } catch (e: unknown) {
       if (abortSignal.aborted) return;
       console.error(`Batch translation error for ${file.path}:`, e);
+      const currentCue = Math.min(completedCues, totalCues);
+      const progress = totalCues > 0 ? (currentCue / totalCues) * 100 : 0;
       sendProgress(event.sender, {
         taskId: file.taskId,
         filePath: file.path,
-        progress: 0,
+        progress,
         status: "error",
         error: getErrorMessage(e),
         outputPath,
+        totalCues,
+        currentCue,
       });
     } finally {
       releasePathClaims?.();

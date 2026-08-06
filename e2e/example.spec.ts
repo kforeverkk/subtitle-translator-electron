@@ -422,6 +422,9 @@ async function runSingleSubtitleTranslation(
   status: string;
   error?: string;
   outputPath?: string;
+  progress?: number;
+  currentCue?: number;
+  totalCues?: number;
 }> {
   return page.evaluate(
     ({ apiHost, sourcePath, taskId, outputFormat }) =>
@@ -1609,6 +1612,85 @@ test("three empty streams fail only after the third request and keep the checkpo
         }
       ).task?.id
     ).toBe(taskId);
+  } finally {
+    await app?.close();
+    await mockServer.close();
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("a failed later chunk keeps partial progress instead of resetting to zero", async () => {
+  const temporaryDirectory = mkdtempSync(
+    path.join(tmpdir(), "subtitle-translator-partial-failure-progress-")
+  );
+  const sourcePath = path.join(temporaryDirectory, "partial-progress.srt");
+  const taskId = "20202020-2020-4020-8020-202020202020";
+  const checkpointPath = path.join(
+    temporaryDirectory,
+    `partial-progress.translation.${taskId.replaceAll("-", "")}.json`
+  );
+  const formatTimestamp = (totalSeconds: number) => {
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `00:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")},000`;
+  };
+  const sourceText = Array.from({ length: 60 }, (_, index) => {
+    return [
+      String(index + 1),
+      `${formatTimestamp(index)} --> ${formatTimestamp(index + 1)}`,
+      `原文 ${index + 1}`,
+      "",
+    ].join("\n");
+  }).join("\n");
+  writeFileSync(sourcePath, sourceText, "utf8");
+
+  let streamRequests = 0;
+  const mockServer = await startMockOpenAiServer({
+    onRequest: ({ bodyText }) => {
+      if (JSON.parse(bodyText).stream === true) streamRequests++;
+    },
+    getStreamResponse: (_bodyText, requestNumber) =>
+      requestNumber === 1
+        ? {
+            elements: Array.from(
+              { length: 20 },
+              (_, index) => `Translation ${index + 1}`
+            ),
+          }
+        : { empty: true },
+  });
+
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = await electron.launch({ args: [".", "--no-sandbox"] });
+    const page = await app.firstWindow();
+    const progress = await runSingleSubtitleTranslation(page, {
+      apiHost: mockServer.apiHost,
+      sourcePath,
+      taskId,
+    });
+
+    expect(progress.status).toBe("error");
+    expect(progress.error).toBe("ERR_INCOMPLETE_MODEL_OUTPUT");
+    expect(progress.progress).toBeCloseTo(100 / 3);
+    expect(progress.currentCue).toBe(20);
+    expect(progress.totalCues).toBe(60);
+    expect(streamRequests).toBe(4);
+
+    const checkpoint = JSON.parse(readFileSync(checkpointPath, "utf8")) as {
+      subtitle?: Array<{
+        type?: string;
+        data?: { translatedText?: string };
+      }>;
+    };
+    expect(
+      checkpoint.subtitle?.filter(
+        (cue) =>
+          cue.type === "cue" &&
+          typeof cue.data?.translatedText === "string" &&
+          cue.data.translatedText.trim().length > 0
+      )
+    ).toHaveLength(20);
   } finally {
     await app?.close();
     await mockServer.close();
