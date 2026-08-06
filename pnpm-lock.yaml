@@ -71,9 +71,6 @@ importers:
       remark-gfm:
         specifier: ^4.0.1
         version: 4.0.1(supports-color@7.2.0)
-      shadcn:
-        specifier: ^4.13.0
-        version: 4.13.0(supports-color@7.2.0)(typescript@7.0.2)
       sonner:
         specifier: ^2.0.7
         version: 2.0.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -138,6 +135,9 @@ importers:
       react-dom:
         specifier: ^19.2.7
         version: 19.2.7(react@19.2.7)
+      shadcn:
+        specifier: ^4.13.0
+        version: 4.13.0(supports-color@7.2.0)(typescript@7.0.2)
       tailwindcss:
         specifier: ^4.3.2
         version: 4.3.2
