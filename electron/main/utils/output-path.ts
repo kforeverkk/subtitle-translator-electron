@@ -252,6 +252,21 @@ export function isReusableTranslationOutputIdentity(
   return isTranslationOutputIdentity(value) && value.format === outputFormat;
 }
 
+export function getReusableTranslationOutputIdentity({
+  cachedIdentity,
+  outputFormat,
+  shouldRestartTranslation,
+}: {
+  cachedIdentity: unknown;
+  outputFormat: SubtitleOutputFormat;
+  shouldRestartTranslation: boolean;
+}): TranslationOutputIdentity | undefined {
+  return !shouldRestartTranslation &&
+    isReusableTranslationOutputIdentity(cachedIdentity, outputFormat)
+    ? cachedIdentity
+    : undefined;
+}
+
 export function createTranslationOutputIdentity(
   filePath: string,
   outputFormat: SubtitleOutputFormat,

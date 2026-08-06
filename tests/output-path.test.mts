@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createTranslationOutputIdentity,
   getLanguageCode,
+  getReusableTranslationOutputIdentity,
   getSubtitleLanguageSuffix,
   getTranslatedPath,
   getTranslatedPathFromOutputIdentity,
@@ -210,4 +211,45 @@ test("reuses only safe output identities with the same output format", () => {
   ]) {
     assert.equal(isTranslationOutputIdentity(unsafeIdentity), false);
   }
+});
+
+test("selects a stored output identity only for a compatible resume", () => {
+  const identity = {
+    format: "srt-bilingual" as const,
+    detectedSourceLanguage: "Chinese",
+    fileName: "movie.en-zh.srt",
+  };
+
+  assert.deepEqual(
+    getReusableTranslationOutputIdentity({
+      cachedIdentity: identity,
+      outputFormat: "srt-bilingual",
+      shouldRestartTranslation: false,
+    }),
+    identity
+  );
+  assert.equal(
+    getReusableTranslationOutputIdentity({
+      cachedIdentity: identity,
+      outputFormat: "ass-bilingual",
+      shouldRestartTranslation: false,
+    }),
+    undefined
+  );
+  assert.equal(
+    getReusableTranslationOutputIdentity({
+      cachedIdentity: identity,
+      outputFormat: "srt-bilingual",
+      shouldRestartTranslation: true,
+    }),
+    undefined
+  );
+  assert.equal(
+    getReusableTranslationOutputIdentity({
+      cachedIdentity: undefined,
+      outputFormat: "srt-bilingual",
+      shouldRestartTranslation: false,
+    }),
+    undefined
+  );
 });

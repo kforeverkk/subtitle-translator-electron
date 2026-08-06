@@ -42,7 +42,12 @@ import {
 import { createSubtitlePreview } from "./utils/subtitle-preview";
 import { normalizeAssFontName } from "./utils/ass-bilingual";
 import { subtitleOutputFormats } from "./utils/subtitle-output";
-import { getTranslatedPath } from "./utils/output-path";
+import {
+  createTranslationOutputIdentity,
+  getReusableTranslationOutputIdentity,
+  getTranslatedPath,
+  getTranslatedPathFromOutputIdentity,
+} from "./utils/output-path";
 import { shouldAnalyzeSubtitles } from "./utils/subtitle-sampling";
 import { fetchAvailableModels } from "./utils/models";
 import { getFirstValidApiKey } from "./utils/api-account";
@@ -1068,41 +1073,52 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
       const allTexts = subtitle
         .map((cue) => cue.data.text)
         .filter((text: string) => text && text.length > 0);
-      let detectedSourceLanguage = "";
-      try {
-        detectedSourceLanguage = await retryTranslation(
-          (texts) =>
-            detectSubtitleLanguage(texts, {
-              apiKeys: params.apiKeys,
-              apiHost: params.apiHost,
-              model: params.model,
-              requestRateLimiter,
+      let outputIdentity = getReusableTranslationOutputIdentity({
+        cachedIdentity: input.cacheDocument?.output,
+        outputFormat: params.outputFormat,
+        shouldRestartTranslation: input.shouldRestartTranslation,
+      });
+      if (!outputIdentity) {
+        let detectedSourceLanguage = "";
+        try {
+          detectedSourceLanguage = await retryTranslation(
+            (texts) =>
+              detectSubtitleLanguage(texts, {
+                apiKeys: params.apiKeys,
+                apiHost: params.apiHost,
+                model: params.model,
+                requestRateLimiter,
+                abortSignal,
+              }),
+            allTexts,
+            {
+              delayMs: params.delay,
               abortSignal,
-            }),
-          allTexts,
-          {
-            delayMs: params.delay,
-            abortSignal,
-          }
-        );
-      } catch (languageDetectionError) {
-        abortSignal.throwIfAborted();
-        console.warn(
-          "Source language detection failed; using the original fallback:",
-          languageDetectionError
+            }
+          );
+        } catch (languageDetectionError) {
+          abortSignal.throwIfAborted();
+          console.warn(
+            "Source language detection failed; using the original fallback:",
+            languageDetectionError
+          );
+        }
+        outputIdentity = createTranslationOutputIdentity(
+          file.path,
+          params.outputFormat,
+          input.sourceName,
+          params.lang,
+          detectedSourceLanguage
         );
       }
 
       const outputDirectory = getValidatedOutputDirectory(
         params.outputDirectory
       );
-      const translatedOutputPath = getTranslatedPath(
+      const translatedOutputPath = getTranslatedPathFromOutputIdentity(
         file.path,
-        params.outputFormat,
         outputDirectory,
-        input.sourceName,
-        params.lang,
-        detectedSourceLanguage
+        outputIdentity
       );
       outputPath = translatedOutputPath;
       let analysisData = input.analysis;
@@ -1144,6 +1160,7 @@ ipcMain.handle("batch-translate", async (event, request: unknown) => {
             format: input.sourceExtension,
             configFingerprint: translationConfigFingerprint,
             taskId: file.taskId,
+            output: outputIdentity,
             analysis: analysisData,
             sourceFingerprint: input.sourceFingerprint,
           })
