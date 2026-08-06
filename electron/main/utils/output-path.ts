@@ -12,7 +12,43 @@ export interface TranslationOutputIdentity {
   fileName: string;
 }
 
-const languageAliases: Record<string, string> = {
+const generatedLanguageCodeValues = [
+  "en",
+  "fr",
+  "ja",
+  "de",
+  "es",
+  "it",
+  "pt",
+  "ko",
+  "zh",
+  "ru",
+  "ar",
+  "nl",
+  "pl",
+  "tr",
+  "vi",
+  "th",
+  "id",
+  "uk",
+  "he",
+  "cs",
+  "sv",
+  "da",
+  "fi",
+  "no",
+  "el",
+  "hu",
+  "ro",
+] as const;
+
+type GeneratedLanguageCode = (typeof generatedLanguageCodeValues)[number];
+
+const generatedLanguageCodes: ReadonlySet<string> = new Set(
+  generatedLanguageCodeValues
+);
+
+const languageAliases: Record<string, GeneratedLanguageCode> = {
   english: "en",
   英语: "en",
   英語: "en",
@@ -145,7 +181,7 @@ const languageAliases: Record<string, string> = {
   羅馬尼亞語: "ro",
 };
 
-const supportedLanguageCodes = new Set(Object.values(languageAliases));
+const supportedLanguageCodes = generatedLanguageCodes;
 
 function getComparablePath(filePath: string): string {
   const normalizedPath = path.resolve(filePath).normalize("NFC");
@@ -174,16 +210,20 @@ export function getLanguageCode(language?: string): string | undefined {
   return code && supportedLanguageCodes.has(code) ? code : undefined;
 }
 
+function isGeneratedLanguageCode(value: string): boolean {
+  return generatedLanguageCodes.has(value.toLocaleLowerCase("en-US"));
+}
+
 function isGeneratedBilingualSuffix(value: string): boolean {
   const [first, second, ...rest] = value.split("-");
   return (
     rest.length === 0 &&
     Boolean(first) &&
     Boolean(second) &&
-    (getLanguageCode(first) !== undefined ||
+    (isGeneratedLanguageCode(first) ||
       first === "original" ||
       first === "translated") &&
-    (getLanguageCode(second) !== undefined ||
+    (isGeneratedLanguageCode(second) ||
       second === "original" ||
       second === "translated")
   );
@@ -199,13 +239,13 @@ function stripGeneratedSubtitleSuffix(sourceName: string): string {
   if (!suffix) return basename;
 
   if (
-    getLanguageCode(suffix) &&
+    isGeneratedLanguageCode(suffix) &&
     parts.at(-2)?.toLocaleLowerCase("en-US") === "translated"
   ) {
     parts.pop();
     parts.pop();
   } else if (
-    getLanguageCode(suffix) ||
+    isGeneratedLanguageCode(suffix) ||
     suffix === "original" ||
     suffix === "translated" ||
     isGeneratedBilingualSuffix(suffix)
