@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  getSubtitleAnalysisPlan,
   sampleSubtitlesForAnalysis,
   shouldAnalyzeSubtitles,
 } from "../electron/main/utils/subtitle-sampling.ts";
@@ -9,6 +10,37 @@ test("analyzes only when a sufficiently large subtitle has no cached analysis", 
   assert.equal(shouldAnalyzeSubtitles(undefined, 40, 40), true);
   assert.equal(shouldAnalyzeSubtitles("Existing context", 40, 40), false);
   assert.equal(shouldAnalyzeSubtitles(undefined, 39, 40), false);
+});
+
+test("requires analysis from 20 cues and restarts unsafe legacy progress", () => {
+  assert.deepEqual(getSubtitleAnalysisPlan(undefined, 19, 0, 20), {
+    requiresAnalysis: false,
+    shouldAnalyze: false,
+    shouldRestartForMissingAnalysis: false,
+  });
+  assert.deepEqual(getSubtitleAnalysisPlan(undefined, 20, 0, 20), {
+    requiresAnalysis: true,
+    shouldAnalyze: true,
+    shouldRestartForMissingAnalysis: false,
+  });
+  assert.deepEqual(getSubtitleAnalysisPlan(undefined, 20, 5, 20), {
+    requiresAnalysis: true,
+    shouldAnalyze: true,
+    shouldRestartForMissingAnalysis: true,
+  });
+  assert.deepEqual(
+    getSubtitleAnalysisPlan("Existing context", 20, 5, 20),
+    {
+      requiresAnalysis: true,
+      shouldAnalyze: false,
+      shouldRestartForMissingAnalysis: false,
+    }
+  );
+  assert.deepEqual(getSubtitleAnalysisPlan(undefined, 19, 5, 20), {
+    requiresAnalysis: false,
+    shouldAnalyze: false,
+    shouldRestartForMissingAnalysis: false,
+  });
 });
 
 test("samples deterministically across the full timeline", () => {

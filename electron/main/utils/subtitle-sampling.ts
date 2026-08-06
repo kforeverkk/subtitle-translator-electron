@@ -3,10 +3,33 @@ export interface AnalysisSampleOptions {
   maxLines?: number;
 }
 
+export interface SubtitleAnalysisPlan {
+  requiresAnalysis: boolean;
+  shouldAnalyze: boolean;
+  shouldRestartForMissingAnalysis: boolean;
+}
+
 const defaultOptions = {
   maxCharacters: 12_000,
   maxLines: 240,
 } as const;
+
+export function getSubtitleAnalysisPlan(
+  cachedAnalysis: string | undefined,
+  subtitleCount: number,
+  completedSubtitleCount: number,
+  minimumSubtitleCount: number
+): SubtitleAnalysisPlan {
+  const requiresAnalysis = subtitleCount >= minimumSubtitleCount;
+  const hasAnalysis = Boolean(cachedAnalysis?.trim());
+  const shouldAnalyze = requiresAnalysis && !hasAnalysis;
+  return {
+    requiresAnalysis,
+    shouldAnalyze,
+    shouldRestartForMissingAnalysis:
+      shouldAnalyze && completedSubtitleCount > 0,
+  };
+}
 
 export function shouldAnalyzeSubtitles(
   cachedAnalysis: string | undefined,
