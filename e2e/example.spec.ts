@@ -2711,6 +2711,163 @@ test("language changes update the native menu immediately and survive reload", a
   }
 });
 
+test("settings snapshot restores only missing or malformed preferences", async () => {
+  const app = await electron.launch({ args: [".", "--no-sandbox"] });
+  try {
+    const page = await app.firstWindow();
+    await page.evaluate(() => {
+      localStorage.clear();
+      localStorage.setItem("language", JSON.stringify("zh-CN"));
+      localStorage.setItem("api_keys", JSON.stringify(["snapshot-test-key"]));
+      localStorage.setItem(
+        "api_host",
+        JSON.stringify("https://snapshot-test.invalid/v1")
+      );
+      localStorage.setItem("requests_per_minute", JSON.stringify(321));
+      localStorage.setItem("translate_context_size", JSON.stringify(27));
+      localStorage.setItem("model", JSON.stringify("current-model"));
+      window.dispatchEvent(new StorageEvent("local-storage", { key: "model" }));
+    });
+    await page.waitForFunction(
+      () => localStorage.getItem("settings_snapshot_v1") !== null
+    );
+    await page.reload();
+
+    await page.evaluate(() => {
+      localStorage.removeItem("language");
+      localStorage.setItem("translate_context_size", "{broken");
+      localStorage.setItem("model", JSON.stringify("newer-model"));
+    });
+    await page.reload();
+
+    const values = await page.evaluate(() => ({
+      language: localStorage.getItem("language"),
+      apiKeys: localStorage.getItem("api_keys"),
+      apiHost: localStorage.getItem("api_host"),
+      rpm: localStorage.getItem("requests_per_minute"),
+      contextSize: localStorage.getItem("translate_context_size"),
+      model: localStorage.getItem("model"),
+    }));
+    expect(values).toEqual({
+      language: JSON.stringify("zh-CN"),
+      apiKeys: JSON.stringify(["snapshot-test-key"]),
+      apiHost: JSON.stringify("https://snapshot-test.invalid/v1"),
+      rpm: JSON.stringify(321),
+      contextSize: JSON.stringify(27),
+      model: JSON.stringify("newer-model"),
+    });
+
+    await expect(
+      page.locator("button").filter({ hasText: /^设定$/ }).first()
+    ).toBeVisible();
+  } finally {
+    await app.close();
+  }
+});
+
+test("protected settings survive a full Electron process restart", async () => {
+  const firstApp = await electron.launch({ args: [".", "--no-sandbox"] });
+  try {
+    const firstPage = await firstApp.firstWindow();
+    await firstPage.evaluate(() => {
+      localStorage.clear();
+      localStorage.setItem("language", JSON.stringify("zh-CN"));
+      localStorage.setItem("requests_per_minute", JSON.stringify(456));
+      localStorage.setItem("translate_context_size", JSON.stringify(33));
+      localStorage.setItem(
+        "subtitle_output_format",
+        JSON.stringify("ass-bilingual")
+      );
+      window.dispatchEvent(
+        new StorageEvent("local-storage", { key: "subtitle_output_format" })
+      );
+    });
+    await firstPage.waitForFunction(
+      () => localStorage.getItem("settings_snapshot_v1") !== null
+    );
+    expect(
+      await firstPage.evaluate(() => {
+        const snapshot = JSON.parse(
+          localStorage.getItem("settings_snapshot_v1") ?? "{}"
+        ) as { values?: Record<string, string> };
+        return snapshot.values?.translate_context_size;
+      })
+    ).toBe(JSON.stringify(33));
+    await firstPage.evaluate(() => {
+      localStorage.removeItem("translate_context_size");
+    });
+    expect(
+      await firstPage.evaluate(() => {
+        const snapshot = JSON.parse(
+          localStorage.getItem("settings_snapshot_v1") ?? "{}"
+        ) as { values?: Record<string, string> };
+        return snapshot.values?.translate_context_size;
+      })
+    ).toBe(JSON.stringify(33));
+  } finally {
+    await firstApp.close();
+  }
+
+  const secondApp = await electron.launch({ args: [".", "--no-sandbox"] });
+  try {
+    const secondPage = await secondApp.firstWindow();
+    await secondPage.waitForFunction(
+      () => localStorage.getItem("translate_context_size") !== null
+    );
+    const values = await secondPage.evaluate(() => ({
+      language: localStorage.getItem("language"),
+      rpm: localStorage.getItem("requests_per_minute"),
+      contextSize: localStorage.getItem("translate_context_size"),
+      outputFormat: localStorage.getItem("subtitle_output_format"),
+    }));
+    expect(values).toEqual({
+      language: JSON.stringify("zh-CN"),
+      rpm: JSON.stringify(456),
+      contextSize: JSON.stringify(33),
+      outputFormat: JSON.stringify("ass-bilingual"),
+    });
+  } finally {
+    await secondApp.close();
+  }
+});
+
+test("reset all clears the live settings and defensive snapshot", async () => {
+  const app = await electron.launch({ args: [".", "--no-sandbox"] });
+  try {
+    const page = await app.firstWindow();
+    await page.evaluate(() => {
+      localStorage.clear();
+      localStorage.setItem("language", JSON.stringify("en-US"));
+      localStorage.setItem("requests_per_minute", JSON.stringify(999));
+      window.dispatchEvent(
+        new StorageEvent("local-storage", { key: "requests_per_minute" })
+      );
+    });
+    await page.waitForFunction(
+      () => localStorage.getItem("settings_snapshot_v1") !== null
+    );
+    await page.reload();
+    await page.getByRole("button", { name: "Settings" }).click();
+
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "Reset" }).click();
+    await page.waitForLoadState("domcontentloaded");
+
+    const values = await page.evaluate(() => ({
+      rpm: localStorage.getItem("requests_per_minute"),
+      snapshot: localStorage.getItem("settings_snapshot_v1"),
+      quarantine: localStorage.getItem("settings_quarantine_v1"),
+    }));
+    expect(values).toEqual({
+      rpm: null,
+      snapshot: null,
+      quarantine: null,
+    });
+  } finally {
+    await app.close();
+  }
+});
+
 test("a rejected batch IPC request marks every task as failed", async () => {
   const temporaryDirectory = mkdtempSync(
     path.join(tmpdir(), "subtitle-translator-invalid-batch-")

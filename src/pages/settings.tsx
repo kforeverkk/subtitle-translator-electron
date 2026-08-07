@@ -11,6 +11,7 @@ import useDelay from "@/hooks/useDelay";
 import useRPM from "@/hooks/useRPM";
 import useTranslationConcurrency from "@/hooks/useTranslationConcurrency";
 import usePrompt from "@/hooks/usePrompt";
+import { resetProtectedSettings } from "@/utils/settings-storage";
 import {
   translationConcurrencyOptions,
   type SubtitleOutputFormat,
@@ -187,7 +188,7 @@ export default function Settings() {
 
   const resetAll = () => {
     if (confirm(t("reset.prompt"))) {
-      localStorage.clear();
+      resetProtectedSettings(localStorage);
       window.location.reload();
     }
   };

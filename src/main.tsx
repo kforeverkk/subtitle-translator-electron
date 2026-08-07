@@ -15,6 +15,7 @@ import DefaultLayout from "./layouts/default";
 import About from "./pages/about";
 import Translator from "./pages/translator";
 import { parseStoredLocale } from "./utils/locale";
+import { initializeSettingsProtection } from "./utils/settings-storage";
 import "./index.css";
 const router = createHashRouter([
   {
@@ -36,6 +37,7 @@ const router = createHashRouter([
     element: <About />,
   },
 ]);
+initializeSettingsProtection(localStorage, window);
 const initialLocale = parseStoredLocale(localStorage.getItem("language"));
 
 async function bootstrap() {
