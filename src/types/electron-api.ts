@@ -83,7 +83,10 @@ export interface SubtitleCuePreview {
   end?: number | string;
 }
 
+export type DesktopPlatform = "win32" | "darwin" | "linux";
+
 export interface ElectronAPI {
+  platform: DesktopPlatform;
   getFilePath(file: File): string;
   selectDirectory(defaultPath?: string): Promise<string | null>;
   listModels(request: {

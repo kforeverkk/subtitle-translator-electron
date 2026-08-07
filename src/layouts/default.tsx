@@ -3,6 +3,7 @@ import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { FilePlus2, Settings2 } from "lucide-react";
 import Settings from "@/pages/settings";
+import appIcon from "@/assets/icon.png";
 import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/sonner";
 import { Sheet } from "@/components/ui/sheet";
@@ -73,7 +74,20 @@ export default function DefaultLayout() {
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-muted/30">
       <header className="flex h-14 shrink-0 items-center gap-4 border-b bg-background/95 px-4 backdrop-blur" style={dragRegionStyle}>
-        <div className="w-14 shrink-0" aria-hidden="true" />
+        <div
+          className="flex w-14 shrink-0 items-center justify-center"
+          aria-hidden="true"
+        >
+          {window.electronAPI.platform === "win32" && (
+            <img
+              src={appIcon}
+              alt=""
+              data-testid="windows-toolbar-app-icon"
+              draggable={false}
+              className="pointer-events-none size-10 select-none object-contain"
+            />
+          )}
+        </div>
         <span className="font-heading text-base font-semibold tracking-tight">Subtitle Translator</span>
         <div className="flex-1" />
         {isTaskSurface && (

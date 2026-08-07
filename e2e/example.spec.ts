@@ -488,6 +488,41 @@ test("homepage has title and links to intro page", async () => {
   }
 });
 
+test("Windows toolbar fills the traffic-light spacer with the app icon", async () => {
+  test.skip(process.platform !== "win32", "Windows-specific toolbar layout");
+
+  const app = await electron.launch({ args: [".", "--no-sandbox"] });
+  try {
+    const page = await app.firstWindow();
+    const icon = page.getByTestId("windows-toolbar-app-icon");
+
+    await expect(icon).toBeVisible();
+    await expect(icon).toHaveAttribute("alt", "");
+    await expect(icon).not.toHaveAttribute("role", "button");
+    await expect
+      .poll(() =>
+        icon.evaluate((element) => {
+          const image = element as HTMLImageElement;
+          const bounds = image.getBoundingClientRect();
+          return {
+            width: bounds.width,
+            height: bounds.height,
+            loaded: image.complete && image.naturalWidth > 0,
+          };
+        })
+      )
+      .toEqual({ width: 40, height: 40, loaded: true });
+
+    await expect(
+      page.getByText("Subtitle Translator", { exact: true })
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Add task" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Settings" })).toBeVisible();
+  } finally {
+    await app.close();
+  }
+});
+
 test("packaged Windows GUI uses the current isolated build", async ({}, testInfo) => {
   const packagedExecutable =
     process.env.SUBTITLE_TRANSLATOR_PACKAGED_EXE?.trim();

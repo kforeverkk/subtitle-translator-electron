@@ -4,10 +4,13 @@ import type {
   BatchProgress,
   BatchTranslationRequest,
   CheckpointSaveWarning,
+  DesktopPlatform,
   SubtitlePreviewRequest,
 } from "../../src/types/electron-api";
 
 const electronAPI = {
+  platform: process.platform as DesktopPlatform,
+
   getFilePath(file: File): string {
     return webUtils.getPathForFile(file);
   },

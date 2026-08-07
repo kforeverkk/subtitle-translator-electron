@@ -13,7 +13,7 @@
 - Reuse `src/assets/icon.png`; do not add a duplicate image.
 - Show the icon only when the platform is `win32`.
 - Keep the existing `56px` left toolbar container on every platform.
-- Render the Windows icon at exactly `36 × 36px`.
+- Render the Windows icon at exactly `40 × 40px`.
 - Keep macOS traffic-light spacing unchanged.
 - Keep Linux behavior unchanged.
 - Do not add IPC, Node.js access in the renderer, click behavior, borders, backgrounds, or new dependencies.
@@ -76,7 +76,7 @@ test("Windows toolbar fills the traffic-light spacer with the app icon", async (
           };
         })
       )
-      .toEqual({ width: 36, height: 36, loaded: true });
+      .toEqual({ width: 40, height: 40, loaded: true });
 
     await expect(page.getByText("Subtitle Translator", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Add task" })).toBeVisible();
@@ -141,7 +141,7 @@ Replace the empty spacer with:
       alt=""
       data-testid="windows-toolbar-app-icon"
       draggable={false}
-      className="pointer-events-none size-9 select-none object-contain"
+      className="pointer-events-none size-10 select-none object-contain"
     />
   )}
 </div>
